@@ -1,0 +1,36 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Data directory contents (keep structure via .gitkeep)
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Models & Experiment artifacts
+models/*
+!models/.gitkeep
+experiments/*
+!experiments/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# OS / IDE files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,114 @@
+# AI-Based Emergency Health Detection and Alert System
+# Configuration File - Research & Educational Simulation
+
+project_name: "AI-Based Emergency Health Detection and Alert System"
+version: "0.1.0-alpha"
+description: "Educational software simulation pipeline for emergency health data research"
+
+# Reproducibility
+random_seed: 42
+
+# Target Risk Classes
+target:
+  - NORMAL
+  - MODERATE
+  - HIGH
+  - CRITICAL
+
+# Dataset Specification
+planned_dataset_sizes:
+  tabular: 100000
+  temporal: 20000
+  signals: 20000
+
+sequence_length: 60
+
+# Data Paths
+paths:
+  data_raw: "data/raw"
+  data_interim: "data/interim"
+  data_processed: "data/processed"
+  models: "models"
+  experiments: "experiments"
+  reports: "reports"
+
+# Feature Definitions
+tabular_schema:
+  raw_features:
+    - case_id
+    - age
+    - sex
+    - heart_rate
+    - systolic_bp
+    - diastolic_bp
+    - spo2
+    - temperature
+    - respiratory_rate
+    - chest_pain
+    - breathing_difficulty
+    - dizziness
+    - unconsciousness
+    - bleeding_injury
+  derived_features:
+    - pulse_pressure
+    - mean_arterial_pressure
+    - shock_index
+    - age_group
+    - spo2_severity
+    - tachycardia_flag
+    - hypotension_flag
+    - fever_flag
+    - tachypnea_flag
+  target_column: "risk_class"
+
+# Preprocessing Configuration
+preprocessing:
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+  imputation_strategy: "median"
+  scaling_method: "standard"
+
+# Model Configurations (Planned)
+models:
+  classical:
+    knn:
+      n_neighbors: 5
+    logistic_regression:
+      max_iter: 1000
+      C: 1.0
+    decision_tree:
+      max_depth: 10
+      random_state: 42
+    random_forest:
+      n_estimators: 100
+      max_depth: 15
+      random_state: 42
+  deep:
+    cnn_1d:
+      num_channels: 1
+      num_classes: 4
+      kernel_size: 5
+      learning_rate: 0.001
+      epochs: 20
+      batch_size: 64
+    rnn:
+      input_size: 6
+      hidden_size: 64
+      num_layers: 2
+      num_classes: 4
+      learning_rate: 0.001
+      epochs: 20
+      batch_size: 64
+    lstm:
+      input_size: 6
+      hidden_size: 64
+      num_layers: 2
+      num_classes: 4
+      learning_rate: 0.001
+      epochs: 20
+      batch_size: 64
+
+# Feature Flags
+explainability:
+  shap_enabled: true

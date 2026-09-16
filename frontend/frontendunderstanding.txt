@@ -1,0 +1,291 @@
+4. Understand the important files
+
+The most important ones right now:
+
+main.tsx
+
+This is basically the entry point.
+
+main.tsx
+    ↓
+App.tsx
+    ↓
+Your React application
+
+You usually don't need to touch main.tsx much.
+
+App.tsx
+
+This is where we'll initially put our registration page.
+
+App.tsx
+    ↓
+Register component
+    ↓
+Form
+
+Eventually we'll make proper components/pages, but don't over-engineer the first exercise.
+
+App.css
+
+Styling for the application.
+
+index.css
+
+Global CSS.
+
+5. For now, simplify App.tsx
+
+Replace the default Vite contents with:
+
+function App() {
+    return (
+        <div>
+            <h1>Register</h1>
+        </div>
+    );
+}
+
+export default App;
+
+Save it.
+
+Your browser should now show:
+
+Register
+
+If that works, React + Vite + TypeScript is successfully initialized.
+
+6. Now create our registration form
+
+For the first iteration, keep it in:
+
+src/App.tsx
+
+Don't immediately create:
+
+components/
+pages/
+services/
+hooks/
+api/
+utils/
+
+We'll introduce those when there's actually a reason for them.
+
+Replace App.tsx with:
+
+import { useState } from "react";
+
+function App() {
+    const [formData, setFormData] = useState({
+        email: "",
+        password: "",
+        first_name: "",
+        last_name: "",
+    });
+
+    const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setFormData({
+            ...formData,
+            [event.target.name]: event.target.value,
+        });
+    };
+
+    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        console.log(formData);
+    };
+
+    return (
+        <form onSubmit={handleSubmit}>
+            <input
+                name="first_name"
+                placeholder="First name"
+                value={formData.first_name}
+                onChange={handleChange}
+            />
+
+            <input
+                name="last_name"
+                placeholder="Last name"
+                value={formData.last_name}
+                onChange={handleChange}
+            />
+
+            <input
+                type="email"
+                name="email"
+                placeholder="Email"
+                value={formData.email}
+                onChange={handleChange}
+            />
+
+            <input
+                type="password"
+                name="password"
+                placeholder="Password"
+                value={formData.password}
+                onChange={handleChange}
+            />
+
+            <button type="submit">
+                Register
+            </button>
+        </form>
+    );
+}
+
+export default App;
+7. Don't worry about the API yet
+
+Right now:
+
+console.log(formData);
+
+is intentional.
+
+Test it.
+
+Enter:
+
+First name: Anshul
+Last name: Sharma
+Email: test@example.com
+Password: test123
+
+Click Register.
+
+Open browser:
+
+F12
+→ Console
+
+You should see:
+
+{
+    email: "test@example.com",
+    password: "test123",
+    first_name: "Anshul",
+    last_name: "Sharma"
+}
+
+This proves:
+
+HTML input
+     ↓
+React state
+     ↓
+handleChange()
+     ↓
+formData
+     ↓
+handleSubmit()
+
+is working.
+
+8. Then we'll introduce the API
+
+Once the above works, we'll change:
+
+console.log(formData);
+
+to:
+
+const response = await fetch(
+    "http://localhost:8000/api/auth/register/",
+    {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(formData),
+    }
+);
+
+And now the architecture becomes:
+
+                FRONTEND
+                   │
+                   ▼
+             React form
+                   │
+             React state
+                   │
+             handleSubmit
+                   │
+                fetch()
+                   │
+                   │ HTTP POST
+                   ▼
+                DJANGO
+                   │
+                   ▼
+             /api/auth/register/
+
+That's the exact connection we're trying to learn.
+
+9. Don't create a frontend API folder yet
+
+You'll eventually see architectures like:
+
+src/
+├── components/
+├── pages/
+├── services/
+├── api/
+├── hooks/
+├── types/
+└── utils/
+
+Those are useful when the application becomes large.
+
+But right now you're learning the fundamentals.
+
+So:
+
+App.tsx
+   ↓
+form
+   ↓
+fetch
+   ↓
+Django
+
+is perfectly fine.
+
+Once we have registration + login + profile + multiple API calls, we'll refactor:
+
+App.tsx
+    ↓
+components/
+    ↓
+services/
+    ↓
+API client
+
+You'll then understand why we're creating those abstractions instead of just copying a folder structure.
+
+Your immediate checkpoint
+
+Do these in order:
+
+cd frontend
+npm create vite@latest . -- --template react-ts
+npm install
+npm run dev
+
+Then create the form in:
+
+frontend/src/App.tsx
+
+First make sure the form logs the data correctly.
+
+After that, we'll make the fetch() POST request and then configure CORS properly on Django.
+
+That gives you the complete learning chain:
+
+React form → HTTP POST → CORS → Django URL → DRF View → Serializer → Service → UserManager → PostgreSQL. 🔥
+
+See another version
