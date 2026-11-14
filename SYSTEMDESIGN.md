@@ -413,13 +413,30 @@ arithmetic. Consequences:
 
 | Model | Test Acc | Served? | Reason |
 |---|---|---|---|
-| **Logistic Regression** | 97.03% | ✅ | 4 KB of numbers, exact rules, calibrated probabilities |
-| Random Forest | 98.05% | ❌ | +1.02 pp requires exporting 200 trees and a traversal evaluator (or a multi-MB ONNX runtime) |
-| KNN | 95.86% | ❌ | would need the 70,000 × 22 training matrix (~12 MB) embedded and per-request distance computation |
-| Decision Tree | 96.61% | ❌ | portable (depth 10) but strictly less accurate than LR |
+| **Logistic Regression** | 97.03% | ✅ | 1.3 KB joblib → 4.4 KB JSON, ~40 lines of arithmetic, exact parity |
+| Random Forest | 98.05% | ❌ | 200 trees, **795,402 nodes**, 73 MB joblib → ≈32 MB compact JSON plus a traversal evaluator |
+| KNN | 95.86% | ❌ | 6.5 MB joblib (70,000 × 22 training vectors) and per-request distance computation |
+| Decision Tree | 96.61% | ❌ | 80 KB and portable, but less accurate than LR |
 | 1D CNN | 99.73% | ❌ | needs a PyTorch runtime and a 500-sample ECG, which the vitals form cannot produce |
 | GRU | 93.70% | ❌ | needs a 60-step × 6-channel trajectory, not available from the form |
 | LSTM | 92.40% | ❌ | same as GRU |
+
+Serving cost is measured, not estimated: Random Forest hits its `max_depth=20` cap in
+every tree, and a compact export (feature/threshold/left/right arrays plus leaf class
+distributions) is still tens of megabytes — that would dominate both the function bundle
+and cold-start time.
+
+**The accuracy gap is also smaller where it matters.** On the 15,000-record test set the
+two models are effectively tied on CRITICAL recall, and Random Forest's +1.02 pp comes
+almost entirely from the easier NORMAL and MODERATE classes:
+
+| Class | LR recall | RF recall |
+|---|---|---|
+| NORMAL | 0.9885 (3,707/3,750) | 0.9973 (3,740/3,750) |
+| MODERATE | 0.9579 (3,592/3,750) | 0.9813 (3,680/3,750) |
+| HIGH | 0.9525 (3,572/3,750) | 0.9616 (3,606/3,750) |
+| **CRITICAL** | **0.9821 (3,683/3,750)** | 0.9819 (3,682/3,750) |
+| Total errors | 446 | 292 |
 
 The decision is **modality- and deployability-driven**, not accuracy-driven:
 
