@@ -2,7 +2,7 @@
 # Configuration File - Research & Educational Simulation
 
 project_name: "AI-Based Emergency Health Detection and Alert System"
-version: "0.1.0-alpha"
+version: "1.0.0"
 description: "Educational software simulation pipeline for emergency health data research"
 
 # Reproducibility
@@ -15,22 +15,24 @@ target:
   - HIGH
   - CRITICAL
 
-# Dataset Specification
+# Dataset Sizes (full production scale)
 planned_dataset_sizes:
-  tabular: 100000
-  temporal: 20000
-  signals: 20000
+  tabular:  100000   # 25,000 per class × 4 classes
+  temporal:  20000   # ~3,333 per class × 6 trajectory types
+  signals:   20000   # 5,000 per class × 4 signal patterns
 
-sequence_length: 60
+# Temporal sequence configuration
+sequence_length: 60    # time steps per trajectory
+signal_length:   500   # samples per ECG-like signal (@ 500 Hz = 1 second)
 
 # Data Paths
 paths:
-  data_raw: "data/raw"
-  data_interim: "data/interim"
+  data_raw:       "data/raw"
+  data_interim:   "data/interim"
   data_processed: "data/processed"
-  models: "models"
-  experiments: "experiments"
-  reports: "reports"
+  models:         "models"
+  experiments:    "experiments"
+  reports:        "reports"
 
 # Feature Definitions
 tabular_schema:
@@ -64,12 +66,12 @@ tabular_schema:
 # Preprocessing Configuration
 preprocessing:
   train_split: 0.70
-  val_split: 0.15
-  test_split: 0.15
+  val_split:   0.15
+  test_split:  0.15
   imputation_strategy: "median"
-  scaling_method: "standard"
+  scaling_method:      "standard"
 
-# Model Configurations (Planned)
+# Model Configurations
 models:
   classical:
     knn:
@@ -81,33 +83,37 @@ models:
       max_depth: 10
       random_state: 42
     random_forest:
-      n_estimators: 100
-      max_depth: 15
+      n_estimators: 200
+      max_depth: 20
       random_state: 42
+      n_jobs: -1
+
   deep:
     cnn_1d:
-      num_channels: 1
-      num_classes: 4
-      kernel_size: 5
+      num_channels: 1        # single-channel ECG-like signal input
+      num_classes:  4
+      kernel_size:  7
       learning_rate: 0.001
-      epochs: 20
-      batch_size: 64
+      epochs:        20
+      batch_size:    128
+
     rnn:
-      input_size: 6
-      hidden_size: 64
-      num_layers: 2
-      num_classes: 4
+      input_size:   6        # 6 physiological channels
+      hidden_size:  128
+      num_layers:   2
+      num_classes:  4
       learning_rate: 0.001
-      epochs: 20
-      batch_size: 64
+      epochs:        20
+      batch_size:    128
+
     lstm:
-      input_size: 6
-      hidden_size: 64
-      num_layers: 2
-      num_classes: 4
+      input_size:   6
+      hidden_size:  128
+      num_layers:   2
+      num_classes:  4
       learning_rate: 0.001
-      epochs: 20
-      batch_size: 64
+      epochs:        20
+      batch_size:    128
 
 # Feature Flags
 explainability:

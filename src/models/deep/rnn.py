@@ -1,4 +1,4 @@
-"""Recurrent Neural Network (RNN) Architecture Skeleton.
+"""Recurrent Neural Network (GRU) Architecture Skeleton.
 
 Educational Simulation System.
 Processes multi-timestep physiological sequence trajectories (60 time steps, 6 features).
@@ -21,7 +21,7 @@ logger = setup_logger("rnn_model")
 
 
 class PhysioRNN(ModuleBase):
-    """RNN architecture for temporal physiological sequence risk classification."""
+    """Recurrent architecture (2-layer GRU) for temporal physiological sequence risk classification."""
 
     def __init__(self, input_size: int = 6, hidden_size: int = 64, num_layers: int = 2, num_classes: int = 4):
         """Initialize RNN architecture.
@@ -36,7 +36,7 @@ class PhysioRNN(ModuleBase):
             super().__init__()
             self.hidden_size = hidden_size
             self.num_layers = num_layers
-            self.rnn = nn.RNN(
+            self.rnn = nn.GRU(
                 input_size=input_size,
                 hidden_size=hidden_size,
                 num_layers=num_layers,

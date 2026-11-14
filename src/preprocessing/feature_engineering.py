@@ -4,7 +4,7 @@ Educational Simulation System.
 Computes domain-specific derived clinical features without data leakage.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import pandas as pd
 import numpy as np
 
@@ -32,7 +32,7 @@ class FeatureEngineer:
         - pulse_pressure: systolic_bp - diastolic_bp
         - mean_arterial_pressure: diastolic_bp + (pulse_pressure / 3)
         - shock_index: heart_rate / systolic_bp
-        - age_group: Categorical age bracket ('young', 'adult', 'senior')
+        - age_group: Categorical age bracket ('child', 'adult', 'senior')
         - spo2_severity: Categorical SpO2 severity ('normal', 'mild_hypoxia', 'severe_hypoxia')
         - tachycardia_flag: 1 if HR > 100 else 0
         - hypotension_flag: 1 if SBP < 90 else 0
@@ -61,31 +61,32 @@ class FeatureEngineer:
 
         # 3. shock_index
         if "heart_rate" in out.columns and "systolic_bp" in out.columns:
-            # Avoid division by zero
             sbp_safe = out["systolic_bp"].replace(0, np.nan)
             out["shock_index"] = out["heart_rate"] / sbp_safe
         else:
             out["shock_index"] = np.nan
 
-        # 4. age_group
+        # 4. age_group (ordinal encoded: 0=child, 1=adult, 2=senior)
         if "age" in out.columns:
-            out["age_group"] = pd.cut(
+            age_cut = pd.cut(
                 out["age"],
                 bins=[-np.inf, 18, 65, np.inf],
-                labels=["child", "adult", "senior"]
-            ).astype(str)
+                labels=[0, 1, 2]
+            )
+            out["age_group"] = age_cut.astype(float).fillna(1.0)
         else:
-            out["age_group"] = "unknown"
+            out["age_group"] = 1.0
 
-        # 5. spo2_severity
+        # 5. spo2_severity (ordinal encoded: 0=severe_hypoxia, 1=mild_hypoxia, 2=normal)
         if "spo2" in out.columns:
-            out["spo2_severity"] = pd.cut(
+            spo2_cut = pd.cut(
                 out["spo2"],
                 bins=[-np.inf, 88, 94, np.inf],
-                labels=["severe_hypoxia", "mild_hypoxia", "normal"]
-            ).astype(str)
+                labels=[0, 1, 2]
+            )
+            out["spo2_severity"] = spo2_cut.astype(float).fillna(2.0)
         else:
-            out["spo2_severity"] = "unknown"
+            out["spo2_severity"] = 2.0
 
         # 6. tachycardia_flag
         if "heart_rate" in out.columns:
@@ -111,5 +112,5 @@ class FeatureEngineer:
         else:
             out["tachypnea_flag"] = 0
 
-        logger.info(f"Computed {len(DERIVED_FEATURES)} derived features. Columns: {out.columns.tolist()}")
+        logger.info(f"Computed {len(DERIVED_FEATURES)} derived features.")
         return out

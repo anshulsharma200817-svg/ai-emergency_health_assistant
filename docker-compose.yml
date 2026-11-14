@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai_health_pipeline
+    # Persist all generated data and trained models across runs
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./experiments:/app/experiments
+      - ./reports:/app/reports
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    # Keep container alive after pipeline completes so you can inspect artifacts
+    # Override with: docker compose run pipeline python3 <script>
+    restart: "no"
