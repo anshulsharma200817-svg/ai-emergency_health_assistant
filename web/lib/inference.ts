@@ -78,15 +78,69 @@ export const DEFAULT_VITALS: Vitals = {
 
 const NUMERIC_FIELDS = Object.keys(DEFAULT_VITALS) as (keyof Vitals)[]
 
+const FLAG_FIELDS = [
+  'chest_pain',
+  'breathing_difficulty',
+  'dizziness',
+  'unconsciousness',
+  'bleeding_injury',
+] as const
+
+/**
+ * Accepted physiological range per field. Values outside these bounds are
+ * rejected instead of being fed to the model, so a typo (or a Fahrenheit
+ * temperature) can never masquerade as a confident critical reading.
+ *
+ * `temperature` is **Celsius**; pass `temperature_unit: "F"` to send Fahrenheit.
+ */
+export const VITALS_RANGES: Record<keyof Vitals, { min: number; max: number }> = {
+  age: { min: 0, max: 120 },
+  sex: { min: 0, max: 1 },
+  heart_rate: { min: 20, max: 300 },
+  systolic_bp: { min: 40, max: 300 },
+  diastolic_bp: { min: 20, max: 200 },
+  spo2: { min: 50, max: 100 },
+  temperature: { min: 25, max: 45 },
+  respiratory_rate: { min: 4, max: 80 },
+  chest_pain: { min: 0, max: 1 },
+  breathing_difficulty: { min: 0, max: 1 },
+  dizziness: { min: 0, max: 1 },
+  unconsciousness: { min: 0, max: 1 },
+  bleeding_injury: { min: 0, max: 1 },
+}
+
+export interface VitalsIssue {
+  field: string
+  value: number
+  min: number
+  max: number
+  message: string
+}
+
+/** Thrown by {@link predictRisk} when a vitals record is out of range. */
+export class VitalsValidationError extends Error {
+  readonly issues: VitalsIssue[]
+
+  constructor(issues: VitalsIssue[]) {
+    super(issues.map(issue => issue.message).join('; '))
+    this.name = 'VitalsValidationError'
+    this.issues = issues
+  }
+}
+
 /**
  * Coerce the incoming payload into a complete, finite vitals record.
  * Missing/invalid fields fall back to {@link DEFAULT_VITALS}.
+ *
+ * `temperature_unit: "F"` (or `"fahrenheit"`) converts the supplied
+ * temperature to Celsius before inference.
  */
 export function normalizeVitals(
   input: Partial<Vitals> | Record<string, unknown> = {},
 ): Vitals {
   const out = { ...DEFAULT_VITALS }
   const source = input as Record<string, unknown>
+  let temperatureSupplied = false
 
   for (const field of NUMERIC_FIELDS) {
     const raw = source[field]
@@ -94,10 +148,55 @@ export function normalizeVitals(
     const value = typeof raw === 'string' ? Number(raw) : raw
     if (typeof value === 'number' && Number.isFinite(value)) {
       out[field] = value
+      if (field === 'temperature') temperatureSupplied = true
     }
   }
 
+  const unit = String(
+    source.temperature_unit ?? source.temperatureUnit ?? '',
+  ).trim().toLowerCase()
+
+  if (temperatureSupplied && (unit === 'f' || unit.startsWith('fahrenheit') || unit === '°f')) {
+    out.temperature = ((out.temperature - 32) * 5) / 9
+  }
+
   return out
+}
+
+/**
+ * Check a normalized vitals record against {@link VITALS_RANGES}.
+ * Returns an empty array when the record is acceptable.
+ */
+export function validateVitals(vitals: Vitals): VitalsIssue[] {
+  const issues: VitalsIssue[] = []
+
+  for (const field of NUMERIC_FIELDS) {
+    if ((FLAG_FIELDS as readonly string[]).includes(field)) continue
+    const { min, max } = VITALS_RANGES[field]
+    const value = vitals[field]
+    if (value >= min && value <= max) continue
+
+    let message = `${field} must be between ${min} and ${max} (received ${value})`
+    if (field === 'temperature' && value >= 90 && value <= 115) {
+      message =
+        'temperature looks like Fahrenheit; send Celsius or add "temperature_unit": "F"'
+    }
+    issues.push({ field, value, min, max, message })
+  }
+
+  for (const flag of FLAG_FIELDS) {
+    const value = vitals[flag]
+    if (value === 0 || value === 1) continue
+    issues.push({
+      field: flag,
+      value,
+      min: 0,
+      max: 1,
+      message: `${flag} must be 0 or 1 (received ${value})`,
+    })
+  }
+
+  return issues
 }
 
 /**
@@ -151,11 +250,19 @@ function round(value: number, digits: number): number {
 
 /**
  * Run the trained model on a single (synthetic) patient record.
+ *
+ * @throws {VitalsValidationError} when any vital is outside {@link VITALS_RANGES}.
  */
 export function predictRisk(
   input: Partial<Vitals> | Record<string, unknown> = {},
 ): PredictionResult {
   const vitals = normalizeVitals(input)
+
+  const issues = validateVitals(vitals)
+  if (issues.length > 0) {
+    throw new VitalsValidationError(issues)
+  }
+
   const engineered = engineerFeatures(vitals)
 
   // 1. Median imputation (pipeline.imputer.statistics_)

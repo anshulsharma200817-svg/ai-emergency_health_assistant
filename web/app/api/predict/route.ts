@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
-import { DEFAULT_VITALS, predictRisk } from '@/lib/inference'
+import {
+  DEFAULT_VITALS,
+  VITALS_RANGES,
+  VitalsValidationError,
+  predictRisk,
+} from '@/lib/inference'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -38,6 +43,15 @@ export async function POST(request: Request) {
     const result = predictRisk(payload as Record<string, unknown>)
     return NextResponse.json(result, { headers: CORS_HEADERS })
   } catch (error) {
+    if (error instanceof VitalsValidationError) {
+      return NextResponse.json(
+        {
+          error: 'Vitals out of range',
+          issues: error.issues,
+        },
+        { status: 400, headers: CORS_HEADERS },
+      )
+    }
     const message = error instanceof Error ? error.message : 'Prediction failed'
     return NextResponse.json({ error: message }, { status: 500, headers: CORS_HEADERS })
   }
@@ -52,6 +66,8 @@ export async function GET() {
       status: 'ok',
       model: 'LogisticRegression (multinomial, lbfgs)',
       test_accuracy: 0.9703,
+      temperature_unit: 'C (send temperature_unit: "F" for Fahrenheit)',
+      accepted_ranges: VITALS_RANGES,
       sample_prediction: predictRisk(DEFAULT_VITALS),
     },
     { headers: CORS_HEADERS },

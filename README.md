@@ -1,391 +1,211 @@
 # AI-Based Emergency Health Detection and Alert System
-## Research & Educational Software Simulation Pipeline
+
+**An educational, end-to-end machine-learning system that classifies synthetic patient
+vitals into four emergency-risk levels and routes a simulated P0–P3 alert.**
+
+Trained offline in Python on 100% synthetic data · served dependency-free on Vercel ·
+fully reproducible with seed 42.
 
 > [!IMPORTANT]
 > **EDUCATIONAL SOFTWARE SIMULATION DISCLAIMER**
-> This project is strictly an **educational software simulation** built on **fully synthetic data**. It is NOT a medical device. It does NOT provide diagnosis, treatment recommendations, clinical decisions, real sensor data acquisition, ambulance dispatch, or hospital integration. All physiological records are procedurally generated and statistically calibrated — no real patient data is used anywhere.
+> This project is strictly an **educational software simulation** built on **fully
+> synthetic data**. It is NOT a medical device. It does NOT provide diagnosis,
+> treatment recommendations, clinical decisions, real sensor acquisition, ambulance
+> dispatch, or hospital integration. No real patient data is used anywhere.
+
+**Live demo:** <https://ai-emergency-health-assistant-kappa.vercel.app/>
+**Technical design:** [`SYSTEMDESIGN.md`](SYSTEMDESIGN.md)
+**Build status:** [`BUILD_STATUS.md`](BUILD_STATUS.md)
 
 ---
 
-## ⚡ Run Everything with One Command
+## 1. Goal
+
+Emergency triage is a genuinely hard ML problem: four risk levels, overlapping
+symptoms, asymmetric costs, and no room for confident wrong answers. Real patient data
+is private and regulated, so this project asks a different question:
+
+> **Can we build the entire lifecycle honestly — data, models, evaluation, serving —
+> on fully synthetic data, and ship it as a public demo without faking any part of it?**
+
+The goal was therefore not "a model that predicts disease". It was **engineering
+proof**: a reproducible pipeline, three clinical data modalities, seven trained models,
+a real evaluation protocol, a safety-conscious inference path, and a deployment that a
+reviewer can audit line by line.
+
+---
+
+## 2. Objectives and how each was met
+
+| # | Objective | Target | Result |
+|---|---|---|---|
+| 1 | Synthetic data at research scale | 100K tabular, 20K temporal, 20K signals | ✅ 100,000 / 20,000 / 20,000 |
+| 2 | Cover three modalities | Tabular, sequence, signal | ✅ Three generators, three model families |
+| 3 | Train four classical models | KNN, LR, DT, RF | ✅ All trained, 22 features |
+| 4 | Train three deep models | 1D CNN, GRU, LSTM | ✅ All trained, 20 epochs each |
+| 5 | Strong tabular accuracy | ≥ 95% macro F1 | ✅ 98.05% (RF), 97.03% (LR) |
+| 6 | Strong signal accuracy | ≥ 99% | ✅ 99.73% (1D CNN) |
+| 7 | Reproducibility | Deterministic reruns | ✅ Seed 42; retraining reproduced every metric |
+| 8 | Test coverage | 100% passing | ✅ 54/54 |
+| 9 | Deployable without Python | Zero runtime ML dependencies | ✅ 4.4 KB frozen parameters + TypeScript |
+| 10 | Exact serving parity | No drift from Python | ✅ 300 records, 0 mismatches, Δ 0.000000 |
+| 11 | Safety guardrails | Reject implausible input | ✅ Range validation, explicit units, disclaimers |
+| 12 | Honest documentation | Decisions and limits written down | ✅ README + SYSTEMDESIGN + BUILD_STATUS |
+
+---
+
+## 3. What we actually did
+
+### 3.1 Generated three synthetic clinical datasets
+
+Every record is procedurally generated and class-balanced (25,000 per class for
+tabular data):
+
+| Modality | Method | Volume | Shape |
+|---|---|---|---|
+| **Tabular** | Scenario-based vitals + symptoms with bounded noise | 100,000 records | 14 raw columns → 22 features |
+| **Temporal** | Markov latent-state trajectories | 20,000 sequences | (60 timesteps × 6 channels) |
+| **Signal** | P/QRS/T ECG-like waveform synthesis at 500 Hz | 20,000 waveforms | (1 × 500) |
+
+A validator then checks schema, ranges, duplicates and class balance before anything
+is trained.
+
+### 3.2 Engineered 22 features, with no leakage
+
+Nine clinical features are derived on top of the 13 raw vitals: pulse pressure, mean
+arterial pressure, shock index, age band, SpO₂ severity band, and four binary criteria
+(tachycardia, hypotension, fever, tachypnea).
+
+Splits are 70/15/15 and stratified; temporal splits are ID-based so a trajectory cannot
+appear in two sets. Scaling and imputation are **fit on the training split only**.
+
+### 3.3 Trained seven models
+
+**Classical ML on tabular vitals**
+
+| Model | Test Accuracy | Test Macro F1 |
+|---|---|---|
+| K-Nearest Neighbors (k=5) | 95.86% | 0.9586 |
+| Logistic Regression | 97.03% | 0.9703 |
+| Decision Tree (depth 10) | 96.61% | 0.9662 |
+| **Random Forest** ⭐ | **98.05%** | **0.9805** |
+
+**Deep learning in PyTorch**
+
+| Model | Input | Test Accuracy | Test Macro F1 | Train time |
+|---|---|---|---|---|
+| **1D CNN** ⭐ | ECG signal (1×500) | **99.73%** | **0.9973** | 117 s |
+| GRU (2-layer) | 60-step sequence | 93.70% | 0.9362 | 530 s |
+| LSTM (2-layer) | 60-step sequence | 92.40% | 0.9226 | 436 s |
+
+All seven were evaluated on held-out test splits that were never used for fitting or
+model selection.
+
+### 3.4 Built the inference and alert layer
+
+`HealthRiskPredictor` performs single and batch inference; `SimulatedAlertEngine` maps
+the predicted class to a priority and a simulated alert level:
+
+| Risk | Priority | Simulated alert |
+|---|---|---|
+| CRITICAL | **P0** | `EMERGENCY_SIMULATION_CRITICAL` |
+| HIGH | **P1** | `EMERGENCY_SIMULATION_HIGH` |
+| MODERATE | **P2** | `SIMULATION_ADVISORY_MODERATE` |
+| NORMAL | **P3** | `SIMULATION_STATUS_NORMAL` |
+
+Every prediction carries an explicit "not for clinical use" disclaimer.
+
+### 3.5 Shipped a live web demo
+
+A Next.js 16 app in [`web/`](web) with an interactive vitals form, normal/critical
+presets, the classical results, and cards for the three trained deep models.
+
+The key engineering decision: **the trained scikit-learn model is frozen into a 4.4 KB
+JSON file** (imputer medians, scaler mean/scale, a 4×22 coefficient matrix, 4
+intercepts). `web/lib/inference.ts` reimplements the exact preprocessing and softmax
+decision function in TypeScript. Vercel therefore runs **no Python, no pickle, no
+PyTorch, and no model download** — just arithmetic with a negligible cold start.
+
+Why Logistic Regression is served even though Random Forest scores 1.02 pp higher is
+explained in [`SYSTEMDESIGN.md` §9](SYSTEMDESIGN.md#9-model-selection-for-serving).
+
+### 3.6 Hardened and verified it
+
+- **Parity test:** 300 records (75 per class) scored by both Python and the deployed
+  TypeScript API — **0 label mismatches, maximum probability difference 0.000000**.
+- **Input validation:** every vital is range-checked server-side; out-of-range input
+  returns `400` with a per-field reason. Fahrenheit is accepted explicitly via
+  `temperature_unit: "F"` instead of being silently misread.
+- **Test isolation:** a test run previously overwrote the production joblibs with
+  200-sample models. Tests now write to a temp directory, and the export script refuses
+  to publish parameters scoring below 0.95 on the held-out split.
+- **Live checks:** page, all assets, both APIs, CORS preflight, hydration and mobile
+  layout verified with headless Chrome.
+
+### 3.7 Deployed to Vercel
+
+Root Directory `web`, no environment variables, no database. Deployment takes about
+two minutes and is documented end-to-end in
+[`SYSTEMDESIGN.md` §16](SYSTEMDESIGN.md#16-deployment-procedure).
+
+---
+
+## 4. Achievements at a glance
+
+- **100,000 + 20,000 + 20,000** synthetic records across three modalities
+- **7 models trained**: 4 classical, 3 deep — every metric published
+- **99.73%** test accuracy on ECG-like signal classification (1D CNN)
+- **98.05%** test accuracy and **0.9805** macro F1 on tabular triage (Random Forest)
+- **54/54 tests passing**, isolated from production artifacts
+- **0 parity mismatches** between Python training and TypeScript serving
+- **4.4 KB** served model — no Python, pickle, ONNX or PyTorch at runtime
+- **A real bug found and fixed during verification**: the deployed model had been
+  accidentally replaced by a test artifact (92.05% instead of 97.03%), and out-of-range
+  input produced confident critical readings. Both are now guarded against and
+  documented.
+- **Every claim is reproducible**: seed 42, fixed splits, and a retrain that reproduces
+  the published numbers exactly.
+
+---
+
+## 5. Try it
+
+### One command (data + training + tests)
 
 ```bash
 docker compose up --build
 ```
 
-That single command will:
-1. Build the Python environment
-2. Generate **100,000 tabular** + **20,000 temporal** + **20,000 signal** synthetic records
-3. Train all 4 classical ML models (KNN, Logistic Regression, Decision Tree, Random Forest)
-4. Run the full **45-test suite** and report results
+Generates all synthetic data, trains the classical models, and runs the full test
+suite; artifacts land in `data/`, `models/`, and `experiments/` on your machine.
 
-All trained models and data files are saved to your local `data/`, `models/`, and `experiments/` directories via Docker volume mounts.
-
-### Other Useful Commands
+### Without Docker
 
 ```bash
-# Run only data generation (no training)
-docker compose run pipeline python3 generate_data.py
-
-# Run only training (uses pre-generated data)
-docker compose run pipeline python3 run_pipeline.py --classical-only --skip-generate
-
-# Quick smoke test (small dataset, fast)
-docker compose run pipeline python3 run_pipeline.py --quick --classical-only
-
-# Just run the test suite
-docker compose run pipeline python3 -m pytest tests/test_pipeline.py -v
-
-# Without Docker (local Python 3.9+)
 pip install -r requirements.txt
 python3 generate_data.py
 python3 run_pipeline.py --classical-only --skip-generate
+python3 -m pytest tests -q
 ```
 
----
-
-## 🚀 Live Web Demo
-
-The interactive demo is a **Next.js 16** app in [`web/`](web). The trained
-Logistic Regression model is exported as plain JSON parameters and served by
-native Next.js API routes — no Python runtime, no pickles, no cold-start model
-download.
+Deep models are optional and need PyTorch:
 
 ```bash
-cd web
-npm install
-npm run dev        # http://localhost:3000
-```
-
-Requires **Node.js 20.9+** (Vercel's default Node 22 works).
-
-**Deploying to Vercel?** See [Section 11](#11-deploy-to-vercel) — it takes about
-two minutes.
-
----
-
-## 1. Project Objective
-
-This project constructs a modular, production-quality, reproducible ML pipeline that simulates physiological anomaly detection and emergency alert priority generation across **three complementary synthetic data modalities**:
-
-| Modality | Description | Volume | Model Type |
-|---|---|---|---|
-| **Tabular** | Static physiological vitals + symptoms | 100,000 records | KNN, LR, DT, RF |
-| **Temporal** | 60-step vital-sign trajectories | 20,000 sequences | RNN, LSTM (PyTorch) |
-| **Signals** | ECG-like waveforms at 500 Hz | 20,000 signals | 1D CNN (PyTorch) |
-
----
-
-## 2. System Architecture
-
-```
-┌─────────────────────────────── config.yaml (seed: 42) ──────────────────────────────┐
-│                                                                                       │
-│      ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
-│      │  Tabular         │    │  Temporal         │    │  Signal           │            │
-│      │  Generator       │    │  Generator        │    │  Generator        │            │
-│      │  100K records    │    │  20K sequences    │    │  20K waveforms    │            │
-│      │  25K × 4 classes │    │  Markov dynamics  │    │  P/QRS/T waves    │            │
-│      └────────┬─────────┘    └────────┬──────────┘    └────────┬─────────┘            │
-│               │                       │                        │                       │
-│               ▼                       ▼                        ▼                       │
-│      ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
-│      │  Feature Eng.    │    │  ID-based Split  │    │  Stratified       │            │
-│      │  22 total feats  │    │  70/15/15        │    │  Split 70/15/15   │            │
-│      │  Standard Scale  │    │  (no leakage)    │    │                   │            │
-│      └────────┬─────────┘    └────────┬──────────┘    └────────┬─────────┘            │
-│               │                       │                        │                       │
-│               ▼                       ▼                        ▼                       │
-│      ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
-│      │  Classical ML    │    │  RNN / LSTM      │    │  1D CNN           │            │
-│      │  KNN  LR DT RF   │    │  (PyTorch)       │    │  (PyTorch)        │            │
-│      └────────┬─────────┘    └────────┬──────────┘    └────────┬─────────┘            │
-│               └───────────────────────┼────────────────────────┘                       │
-│                                       ▼                                               │
-│                              ┌──────────────────┐                                     │
-│                              │  Evaluation Suite │                                     │
-│                              │  Accuracy, Macro  │                                     │
-│                              │  F1, Precision,   │                                     │
-│                              │  Recall, per-class│                                     │
-│                              └────────┬──────────┘                                     │
-│                                       ▼                                               │
-│                              ┌──────────────────┐                                     │
-│                              │  Inference        │                                     │
-│                              │  Predictor        │                                     │
-│                              │  + Alert Engine   │                                     │
-│                              │  P0 P1 P2 P3      │                                     │
-│                              └──────────────────┘                                     │
-└───────────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Synthetic Data Design
-
-### Risk Classes
-| Class | Label | Records |
-|---|---|---|
-| Normal | 0 | 25,000 |
-| Moderate | 1 | 25,000 |
-| High | 2 | 25,000 |
-| Critical | 3 | 25,000 |
-
-### Raw Features (14 columns)
-`case_id`, `age`, `sex`, `heart_rate`, `systolic_bp`, `diastolic_bp`, `spo2`, `temperature`, `respiratory_rate`, `chest_pain`, `breathing_difficulty`, `dizziness`, `unconsciousness`, `bleeding_injury`
-
-### Derived Features (9 — added during preprocessing)
-| Feature | Formula |
-|---|---|
-| `pulse_pressure` | SBP − DBP |
-| `mean_arterial_pressure` | DBP + PP/3 |
-| `shock_index` | HR / SBP |
-| `age_group` | Ordinal bin: 0=child, 1=adult, 2=senior |
-| `spo2_severity` | Ordinal bin: 0=severe, 1=mild, 2=normal |
-| `tachycardia_flag` | 1 if HR > 100 |
-| `hypotension_flag` | 1 if SBP < 90 |
-| `fever_flag` | 1 if Temp > 38.0 °C |
-| `tachypnea_flag` | 1 if RR > 20 |
-
-**Total feature dimension: 22**
-
----
-
-## 4. Training Results (100K production dataset)
-
-### Classical ML — Test Set Performance
-
-| Model | Val Accuracy | Val Macro F1 | Test Accuracy | Test Macro F1 |
-|---|---|---|---|---|
-| KNN (k=5) | 95.86% | 0.9586 | 95.86% | 0.9586 |
-| Logistic Regression | 97.06% | 0.9706 | 97.03% | 0.9703 |
-| Decision Tree (depth 10) | 96.41% | 0.9641 | 96.61% | 0.9662 |
-| **Random Forest** ⭐ | **98.09%** | **0.9809** | **98.05%** | **0.9805** |
-
-> Train / Val / Test split: 70,000 / 15,000 / 15,000 (stratified by class)
-
----
-
-## 5. Test Coverage — 54/54 Passing ✅
-
-45 integration tests plus 9 schema/config/import unit tests (`pytest tests`).
-
-```
-TestTabularGenerator    7 tests  — shape, class balance, ranges, physio validity
-TestTemporalGenerator   5 tests  — shapes, label range, physio values, dtypes
-TestSignalGenerator     5 tests  — shape, labels, balanced classes, single signal
-TestFeatureEngineering  3 tests  — derived columns, pulse pressure formula, binary flags
-TestPreprocessingPipeline 6 tests — fit/transform, NaN-free, leakage guard, save/load
-TestDataSplitters       3 tests  — sizes, no case_id overlap, no temporal leakage
-TestClassicalTraining   3 tests  — all models present, metrics in [0,1], beat random
-TestInferencePredictor  4 tests  — prediction keys, valid class, proba sum=1, batch
-TestAlertEngine         5 tests  — P0/P1/P2/P3 mapping, disclaimer present
-TestDataValidator       4 tests  — schema, report structure, no dups, range violations
-
-Total: 54 passed (45 integration + 9 unit) in ~4s
-```
-
----
-
-## 6. Project Structure
-
-```
-ai-emergency_health_assistant/
-├── Dockerfile                     # Single-command build & run
-├── docker-compose.yml             # Volume-mounted compose setup
-├── generate_data.py               # Standalone data generation script
-├── run_pipeline.py                # End-to-end pipeline orchestrator
-├── config.yaml                    # All hyperparameters & paths (seed: 42)
-├── requirements.txt               # Python dependencies
-│
-├── data/
-│   ├── raw/                       # tabular_raw.csv, temporal_*.npy, signal_*.npy
-│   ├── interim/                   # intermediate processed files
-│   └── processed/                 # X_tab_*.npy, y_tab_*.npy arrays
-│
-├── models/
-│   ├── preprocessing_pipeline.pkl # Fitted scaler + imputer + label encoder
-│   ├── classical/                 # knn.joblib, logistic_regression.joblib, ...
-│   └── deep/                      # best_cnn.pt, best_rnn.pt, best_lstm.pt
-│
-├── experiments/results/
-│   ├── classical_results.json
-│   └── pipeline_summary.json
-│
-├── src/
-│   ├── data/
-│   │   ├── tabular_generator.py   # Scenario-based tabular synthesis
-│   │   ├── temporal_generator.py  # Markov latent state trajectory synthesis
-│   │   ├── signal_generator.py    # P/QRS/T ECG waveform synthesis
-│   │   ├── validator.py           # Schema + range + duplicate validation
-│   │   └── schema.py              # Feature definitions & RiskClass enum
-│   ├── preprocessing/
-│   │   ├── feature_engineering.py # 9 derived clinical features
-│   │   ├── pipeline.py            # Impute → scale → label encode
-│   │   └── splitters.py           # Stratified / ID-based splits
-│   ├── models/
-│   │   ├── classical/             # KNN, LR, DT, RF sklearn wrappers
-│   │   └── deep/                  # Physio1DCNN, PhysioRNN, PhysioLSTM
-│   ├── training/
-│   │   ├── train_classical.py     # Classical ML training orchestrator
-│   │   └── train_deep.py          # PyTorch deep learning trainer
-│   ├── evaluation/
-│   │   └── metrics.py             # Accuracy, F1, confusion matrix, reports
-│   ├── explainability/
-│   │   ├── feature_importance.py  # Tree importances, LR coefficients
-│   │   └── shap_explainer.py      # SHAP TreeExplainer integration
-│   ├── inference/
-│   │   ├── predictor.py           # Single + batch risk inference
-│   │   └── alert_engine.py        # P0–P3 simulated alert routing
-│   └── utils/
-│       ├── logger.py              # Structured logging
-│       ├── config_loader.py       # YAML config parsing
-│       └── seed.py                # Global seed setter
-│
-├── web/                           # Next.js 16 demo (deployed on Vercel)
-│   ├── app/
-│   │   ├── layout.tsx
-│   │   ├── page.tsx              # Interactive vitals form + results
-│   │   └── api/
-│   │       ├── predict/route.ts  # POST /api/predict — live inference
-│   │       └── metrics/route.ts  # GET  /api/metrics — training results
-│   ├── lib/
-│   │   ├── inference.ts          # Feature engineering + LR in TypeScript
-│   │   └── model-params.json     # Exported scaler/imputer/coef parameters
-│   ├── package.json
-│   └── next.config.mjs
-│
-├── scripts/
-│   └── export_web_model_params.py # Re-export model JSON after re-training
-│
-└── tests/
-    ├── test_pipeline.py           # 45 comprehensive integration tests
-    ├── test_schema.py             # Schema & feature definition tests
-    ├── test_config.py             # Config parsing tests
-    └── test_imports.py            # Module import sanity tests
-```
-
----
-
-## 7. Inference Example
-
-```python
-import yaml
-from src.inference.predictor import HealthRiskPredictor
-from src.inference.alert_engine import SimulatedAlertEngine
-
-config = yaml.safe_load(open("config.yaml"))
-
-predictor = HealthRiskPredictor.from_saved_model(
-    model_path    = "models/classical/random_forest.joblib",
-    pipeline_path = "models/preprocessing_pipeline.pkl",
-    config        = config,
-)
-
-# A simulated critical patient case
-record = {
-    "case_id": "DEMO_001", "age": 67, "sex": 1,
-    "heart_rate": 142, "systolic_bp": 72, "diastolic_bp": 44,
-    "spo2": 84, "temperature": 39.4, "respiratory_rate": 34,
-    "chest_pain": 1, "breathing_difficulty": 1,
-    "dizziness": 1, "unconsciousness": 0, "bleeding_injury": 0,
-}
-
-result = predictor.predict_record(record)
-# → {'predicted_risk_class': 'CRITICAL', 'confidence': 0.98, 'probabilities': {...}}
-
-alert = SimulatedAlertEngine(config).generate_alert(result)
-# → {'priority': 'P0', 'alert_level': 'EMERGENCY_SIMULATION_CRITICAL', ...}
-```
-
----
-
-## 8. Alert Priority Mapping
-
-| Predicted Risk | Priority | Simulation Alert Level |
-|---|---|---|
-| CRITICAL | **P0** | EMERGENCY_SIMULATION_CRITICAL |
-| HIGH | **P1** | EMERGENCY_SIMULATION_HIGH |
-| MODERATE | **P2** | SIMULATION_ADVISORY_MODERATE |
-| NORMAL | **P3** | SIMULATION_STATUS_NORMAL |
-
----
-
-## 9. Deep Learning Models (PyTorch)
-
-All three deep models are **implemented and trained** on the full synthetic
-datasets (14,000 train / 3,000 val / 3,000 test):
-
-| Model | Input | Architecture | Val Accuracy | Test Accuracy | Test Macro F1 | Train Time |
-|---|---|---|---|---|---|---|
-| **Physio1DCNN** ⭐ | (batch, 1, 500) signal | Conv1D → BN → Pool × 2 → AdaptivePool → FC | **99.73%** | **99.73%** | **0.9973** | 117 s |
-| **PhysioRNN (GRU)** | (batch, 60, 6) sequence | 2-layer GRU → last hidden → FC | 94.03% | 93.70% | 0.9362 | 530 s |
-| **PhysioLSTM** | (batch, 60, 6) sequence | 2-layer LSTM → last hidden → FC | 92.93% | 92.40% | 0.9226 | 436 s |
-
-> 20 epochs each, Adam (lr = 0.001), CrossEntropyLoss, batch size 128, best
-> checkpoint selected by validation accuracy. Training was run on CPU (PyTorch
-> 2.15 CPU build); full run ≈ 18 minutes.
-
-Best checkpoints are written to `models/deep/` (`cnn_1d_best.pt`,
-`rnn_best.pt`, `lstm_best.pt`) and per-epoch history + metrics to
-`experiments/results/deep_results.json`. Model weights are git-ignored, so
-retrain after cloning:
-
-```bash
-pip install torch  # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 python3 run_pipeline.py --deep-only --skip-generate
 ```
 
----
-
-## 10. Reproducibility
-
-| Setting | Value |
-|---|---|
-| Random seed | 42 (all generators, sklearn, numpy) |
-| Train/Val/Test split | 70% / 15% / 15% |
-| Tabular generator | 25,000 samples per class |
-| Feature scaling | StandardScaler (fit on train only) |
-| Label encoding | NORMAL=0, MODERATE=1, HIGH=2, CRITICAL=3 |
-
----
-
-## 11. Deploy to Vercel
-
-The deployment is a single Next.js 16 app. It needs **no environment variables,
-no database, and no Python runtime**. The model runs as TypeScript inside the
-`/api/predict` route, using parameters exported from the trained scikit-learn
-pipeline.
-
-### Option A — Vercel Dashboard (recommended)
-
-1. Push this repository to GitHub.
-2. Go to [vercel.com/new](https://vercel.com/new) and import the repository.
-3. **Set Root Directory to `web`** (Edit → Root Directory).
-   This is the only setting you must change.
-4. Framework preset auto-detects **Next.js**; leave build settings at their
-   defaults (`npm run build`, output `.next`).
-5. Click **Deploy**. No environment variables are required.
-6. Open the deployment URL — the live demo and `/api/predict` are ready.
-
-### Option B — Vercel CLI
+### Web demo locally
 
 ```bash
 cd web
 npm install
-npx vercel --prod
+npm run dev
 ```
 
-Accept the defaults when prompted (link/create project, framework: Next.js).
-Subsequent deploys only need `npx vercel --prod` or a `git push`.
+Requires Node.js 20.9+.
 
-### API endpoints
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/` | GET | Interactive demo UI |
-| `/api/predict` | POST | Body = vitals JSON; returns risk class, priority & probabilities |
-| `/api/predict` | GET | Health check + sample prediction |
-| `/api/metrics` | GET | Pre-computed model metrics and dataset stats |
+### Call the API
 
 ```bash
 curl -X POST https://your-app.vercel.app/api/predict \
@@ -395,26 +215,66 @@ curl -X POST https://your-app.vercel.app/api/predict \
        "chest_pain":1,"breathing_difficulty":1}'
 ```
 
-### Re-exporting the model after re-training
-
-`web/lib/model-params.json` contains only the fitted scaler/imputer statistics
-and Logistic Regression coefficients (~8 KB). If you retrain the models, refresh
-it with:
-
-```bash
-python3 scripts/export_web_model_params.py
+```json
+{"predicted_risk_class":"CRITICAL","priority":"P0","confidence":0.9912,
+ "probabilities":{"NORMAL":0,"MODERATE":0,"HIGH":0.0088,"CRITICAL":0.9912},
+ "alert_color":"#ef4444",
+ "disclaimer":"EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE"}
 ```
 
-> The TypeScript inference was verified against the Python pipeline on 600+
-> randomized records and bin-boundary edge cases: **0 label mismatches**, maximum
-> probability difference < 0.0001 (JSON rounding).
+---
 
-### Notes
+## 6. What is in the repository
 
-- The `web/` directory is self-contained: deploy it as the Vercel Root Directory.
-- Do **not** deploy from the repository root — the root also contains the
-  offline training pipeline, `backend/`, and `frontend/`, which are not part of
-  the hosted demo and would confuse Vercel's framework detection.
-- `data/`, `models/`, and `experiments/` are git-ignored and never shipped to
-  Vercel.
+| Path | Contents |
+|---|---|
+| `src/` | Generators, validation, feature engineering, preprocessing, models, training, evaluation, explainability, inference, alert engine |
+| `web/` | Next.js 16 demo, `/api/predict`, `/api/metrics`, TypeScript inference, frozen model params |
+| `tests/` | 54 tests: 45 integration + 9 schema/config/import units |
+| `scripts/` | `export_web_model_params.py` — re-export and verify the served model |
+| `config.yaml` | Single source of truth: seed, splits, paths, hyperparameters |
+| `data/`, `models/`, `experiments/` | Generated artifacts (git-ignored) |
 
+Full file-by-file structure, architecture, and design rationale:
+[`SYSTEMDESIGN.md`](SYSTEMDESIGN.md).
+
+---
+
+## 7. Scope and honest limitations
+
+- **Synthetic data only.** The generators produce realistic *shapes*, not real
+  physiology; results do not transfer to clinical use and are not meant to.
+- **Not a medical device.** No diagnosis, treatment, dispatch, or device integration.
+- **The deep models are not served.** They are trained and measured, but the web demo
+  serves a tabular model because the form collects tabular vitals. The rationale is in
+  `SYSTEMDESIGN.md` §9.
+- **No authentication or rate limiting** on the public demo endpoints.
+- **`backend/` and `frontend/`** in this repository are an unrelated auth demo and are
+  excluded from deployment by the Vercel Root Directory setting.
+
+---
+
+## 8. Documentation map
+
+| Document | Purpose |
+|---|---|
+| `README.md` (this file) | Goal, objectives, achievements, what was built |
+| `SYSTEMDESIGN.md` | Architecture, data design, models, input→output pipeline, API contract, verification |
+| `BUILD_STATUS.md` | Current completion status and model results |
+| `architecture.md` | Visual overview of the training and serving planes |
+
+---
+
+## 9. Next steps
+
+1. Serve the 1D CNN for ECG input as a separate demo (requires a model runtime or a
+   second, signal-oriented form).
+2. Add authentication and rate limiting before promoting the API publicly.
+3. Extend explainability: surfaced SHAP values per prediction instead of offline-only.
+4. Evaluate on a consented, de-identified dataset in a research setting — with IRB
+   approval, and never as a medical device.
+
+---
+
+*Educational software simulation. All data is synthetic. Random seed: 42.
+Not for clinical use.*

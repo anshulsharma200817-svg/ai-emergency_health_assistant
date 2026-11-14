@@ -1,301 +1,828 @@
-# SYSTEMDESIGN.md
+# System Design — AI-Based Emergency Health Detection and Alert System
 
-**Project:** Hackathon submission & judging platform (Dogfood 2026 prep)
-**Stack:** Django 6.1 + Django REST Framework + PostgreSQL 16 + React (Vite, TypeScript)
-**Deployment target:** one machine, `docker compose up`, fully offline
+**Document type:** Technical system design and implementation record
+**Project:** AI-Based Emergency Health Detection and Alert System
+**Stack:** Python 3.10+ (NumPy, pandas, scikit-learn, PyTorch), Next.js 16 (TypeScript), Vercel
+**Data:** 100% synthetic — 100,000 tabular records, 20,000 temporal sequences, 20,000 ECG-like signals
+**Status:** Feature complete, trained, tested, and deployed
+**Companion document:** [`README.md`](README.md) — goals, objectives, and achievements
+
+> [!IMPORTANT]
+> **EDUCATIONAL SOFTWARE SIMULATION ONLY.**
+> This system is an educational simulation built entirely on procedurally generated
+> synthetic data. It is **not** a medical device. It does **not** diagnose, recommend
+> treatment, dispatch ambulances, ingest real sensor data, or integrate with any
+> hospital system. No real patient data is used anywhere in this repository.
 
 ---
 
-## 0. The governing constraint
+## 0. Purpose and governing constraints
 
-Before any design decision, this problem statement fixes the operating envelope:
+The project demonstrates a complete, reproducible machine-learning lifecycle:
+**synthetic data generation → validation → preprocessing → training → evaluation →
+inference → alert routing → web deployment.** Every decision below follows from four
+constraints:
 
-| Constraint | Consequence for design |
+| Constraint | Consequence for the design |
 |---|---|
-| Must run from `docker compose up` on a laptop | Single node. No cluster, no service mesh, no multi-region. |
-| Must work with **network disabled** | No CDN, no hosted cache, no external auth, no third-party API, no telemetry SaaS. |
-| Must be self-hosted by a small organizer team | Every moving part is an operational burden. Fewer containers = higher score. |
-| Realistic load: ~300 projects, ~50 judges, a few thousand voters | This is a **small-data** problem. Postgres on a laptop handles it comfortably. |
-| Scored on correctness (40%), judging integrity (25%), operability (20%), code quality (15%) | Correctness and operability beat throughput engineering. |
+| Educational/research simulation only | Synthetic generators, explicit disclaimers in every prediction payload, no clinical claims |
+| Must be reproducible on a laptop | Single seed (42), deterministic splits, CPU-only training, no external services |
+| Must cover multiple clinical data modalities | Three generators and three model families rather than one narrow demo |
+| Must be publicly demonstrable | A dependency-free Next.js deployment that does not ship Python, pickles, or PyTorch weights |
 
-> **The single most important design judgment in this project is knowing which "real-world system design" techniques to leave out.** A Kafka queue in a laptop-deployed hackathon platform is not sophistication; it is a bug in judgment. This document records both sides of that decision explicitly.
-
----
-
-## 1. Scope decision table — what we implement, what we skip
-
-### 1.1 Implement (earns correctness, integrity or operability points)
-
-| # | Technique | Why it earns its place here | Cost |
-|---|---|---|---|
-| 1 | **Database connection pooling** (`CONN_MAX_AGE`, `CONN_HEALTH_CHECKS`) | Django opens a new Postgres connection per request by default. Under the acceptance suite's concurrent calls this is the first thing that hurts. One settings line. | 2 lines |
-| 2 | **Deliberate indexing** (FK indexes, composite indexes on hot filters, GIN index for gallery search) | Every list endpoint filters by `event_id` + status. Without indexes, sequential scans; with them, the gallery stays instant. Also the clearest "we thought about the database" signal in code review. | Migration |
-| 3 | **N+1 query elimination** (`select_related` / `prefetch_related`) | The judge dashboard and gallery are join-heavy. This is the single most common performance defect in Django code and reviewers look for it. | Discipline |
-| 4 | **Keyset-friendly pagination on every list endpoint** | Prevents unbounded responses, required for a gallery of 300+ projects, and is table stakes for API quality. | DRF config |
-| 5 | **Application-level caching with explicit invalidation** (see §4) | Leaderboards and normalization runs are expensive to recompute per request. Caching them is defensible. Caching them *without* documented invalidation is worse than not caching. | Moderate |
-| 6 | **Rate limiting** (DRF throttling, DB/locmem-backed) | Directly scored: T3 requires rate limiting, and the threat model bonus depends on it. Applies to register, login, vote, comment. | Low |
-| 7 | **Idempotency on mutating endpoints** (unique constraints + upsert semantics) | Double-clicked "submit vote" or a retried webhook must not create two rows. Enforced in the DB, not in JavaScript. | Constraints |
-| 8 | **Transactions + row locking for scoring** (`transaction.atomic`, `select_for_update`) | Two judges scoring the same submission concurrently, or a normalization run reading mid-write, must not corrupt results. This is judging integrity — 25% of the score. | Moderate |
-| 9 | **Append-only audit log** | Required by T3, and it is what makes every other judging claim defensible. Write on every state transition. | Moderate |
-| 10 | **Background job execution for slow work** (see §5 — a simple in-process/threaded worker, not a broker) | Normalization runs, CSV exports, certificate generation and webhook delivery must not block an HTTP request. | Moderate |
-| 11 | **Secure-by-default authorization** (DRF `DEFAULT_PERMISSION_CLASSES = IsAuthenticated`, opt-in public routes) | The failure mode that loses this hackathon is a judge endpoint that a participant can call. Default-deny makes that structurally hard. | 1 line |
-| 12 | **Structured logging + `/healthz` endpoint** | Operability. Lets an organizer see what happened and lets Docker health-check the app. | Low |
-| 13 | **Migrations as the only schema path** | Reproducibility on a fresh clone. Never `--fake`, never hand-edited SQL. | Discipline |
-| 14 | **Seed/fixture loading that is idempotent** | `docker compose up` twice must not duplicate the fixture data. This is explicitly what the graders will do. | Low |
-
-### 1.2 Deliberately NOT implemented (and why)
-
-| Technique | Why it is wrong *for this problem* |
-|---|---|
-| **Horizontal scaling / load balancer (nginx round-robin over N app nodes)** | The deliverable is a laptop deployment. A load balancer across one replica is theatre. *We do run a reverse proxy (§3), but for static-file serving and a single entrypoint, not for balancing.* |
-| **Redis / Memcached as a separate container** | Adds a container, a failure mode and a dependency to a system whose entire working set fits in Postgres and process memory. Postgres-backed cache + per-process locmem is enough at this scale. Revisit only if profiling shows otherwise. |
-| **Celery + broker (RabbitMQ/Redis)** | Three extra containers to run jobs that take under a second at this data size. §5 explains the lighter alternative. |
-| **Kafka / event streaming** | There is no stream. There are a few thousand rows. |
-| **Microservices** | Splitting a 72-hour single-team codebase into services multiplies deployment and debugging cost while removing transactional integrity — exactly the property the judging engine needs most. Modular monolith instead (§2). |
-| **CDN / edge caching** | Offline requirement makes this impossible by definition. |
-| **Read replicas / sharding / partitioning** | Wrong by three orders of magnitude. |
-| **Kubernetes / Helm** | The acceptance criterion is literally `docker compose up`. |
-| **Elasticsearch / OpenSearch** | Postgres full-text search (`tsvector` + GIN) covers gallery search with zero extra infrastructure. |
-| **S3 / object storage** | A Docker volume on local disk. Offline requirement again. |
-| **External auth (OAuth, Auth0, Clerk)** | Explicitly banned by the rules. Sessions are implemented in-house. |
-| **WebSockets / real-time dashboards** | Nice demo, no rubric points, meaningful complexity (ASGI, channel layer). Polling is fine for judge progress. |
-| **GraphQL** | The rubric asks for REST + OpenAPI. |
-| **Prometheus / Grafana stack** | Two more containers for observability nobody will operate during judging. Structured logs + `/healthz` cover the operability criterion. |
-
-> Every row in the right-hand table is a line we can defend out loud in the demo video. "We didn't add Redis" is a stronger answer than an unused Redis container, **provided we can say why.**
+The central engineering judgment is **where computation happens**: training is offline
+and heavy (scikit-learn/PyTorch, 100K records), while serving is online and must be
+trivial (a 4 KB parameter file and ~40 lines of TypeScript arithmetic). Section 8
+explains that boundary in detail.
 
 ---
 
-## 2. Architecture — modular monolith
-
-One Django project, one deployable, internally split by **domain**, not by technical layer.
+## 1. System architecture
 
 ```
-backend/
-├── config/                 # settings, root urls, asgi/wsgi
-└── apps/
-    ├── user/               # identity: accounts, sessions, auth
-    ├── event/              # events, tracks, prizes, phase windows
-    ├── team/               # teams, membership, invites
-    ├── submission/         # projects, drafts, deadline enforcement, gallery
-    ├── judging/            # rubrics, assignment, scores, normalization
-    ├── community/          # votes, comments, abuse controls
-    ├── audit/              # append-only event log
-    └── core/               # shared: permissions, pagination, throttles, jobs
+┌─────────────────────────────── config.yaml (seed: 42) ──────────────────────────────┐
+│                                                                                       │
+│      ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
+│      │  Tabular         │    │  Temporal         │    │  Signal           │            │
+│      │  Generator       │    │  Generator        │    │  Generator        │            │
+│      │  100K records    │    │  20K sequences    │    │  20K waveforms    │            │
+│      │  25K × 4 classes │    │  Markov dynamics  │    │  P/QRS/T waves    │            │
+│      └────────┬─────────┘    └────────┬──────────┘    └────────┬─────────┘            │
+│               │                       │                        │                       │
+│               ▼                       ▼                        ▼                       │
+│      ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
+│      │  Feature Eng.    │    │  ID-based Split  │    │  Stratified       │            │
+│      │  22 total feats  │    │  70/15/15        │    │  Split 70/15/15   │            │
+│      │  Standard Scale  │    │  (no leakage)    │    │                   │            │
+│      └────────┬─────────┘    └────────┬──────────┘    └────────┬─────────┘            │
+│               │                       │                        │                       │
+│               ▼                       ▼                        ▼                       │
+│      ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
+│      │  Classical ML    │    │  RNN / LSTM      │    │  1D CNN           │            │
+│      │  KNN  LR DT RF   │    │  (PyTorch)       │    │  (PyTorch)        │            │
+│      └────────┬─────────┘    └────────┬──────────┘    └────────┬─────────┘            │
+│               └───────────────────────┼────────────────────────┘                       │
+│                                       ▼                                               │
+│                              ┌──────────────────┐                                     │
+│                              │  Evaluation Suite │                                     │
+│                              │  Accuracy, Macro  │                                     │
+│                              │  F1, Precision,   │                                     │
+│                              │  Recall, per-class│                                     │
+│                              └────────┬──────────┘                                     │
+│                                       ▼                                               │
+│                              ┌──────────────────┐                                     │
+│                              │  Inference        │                                     │
+│                              │  Predictor        │                                     │
+│                              │  + Alert Engine   │                                     │
+│                              │  P0 P1 P2 P3      │                                     │
+│                              └──────────────────┘                                     │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each app owns the same internal shape:
+Two runtime planes:
 
-```
-models.py        # persistence only — no business rules beyond invariants
-selectors.py     # read queries (indexed, select_related, no side effects)
-services.py      # write operations — the ONLY place state changes
-serializers.py   # transport shape validation (I/O contract, not business rules)
-views.py         # HTTP concerns: auth, status codes, delegation to services
-permissions.py   # role gates for this domain
-tests/
-```
-
-**The rule that keeps this clean:** views never touch the ORM for writes, and services never touch `request`. A service function is callable from a view, a management command, a background job or a test with identical behaviour. This is what makes the CSV export, the seed script and the API share one code path.
-
-### Why a monolith and not services
-Judging integrity requires that assignment, scoring and normalization see a consistent snapshot. Inside one Postgres transaction that is free. Across services it requires distributed transactions or eventual consistency — strictly worse, for zero benefit at this scale.
-
----
-
-## 3. Runtime topology
-
-```
-                    ┌─────────────────────────────────┐
-                    │        docker compose up        │
-                    └─────────────────────────────────┘
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        ▼                           ▼                           ▼
-┌───────────────┐          ┌─────────────────┐         ┌────────────────┐
-│  web (nginx)  │          │   app (Django)  │         │  db (Postgres) │
-│               │          │                 │         │                │
-│ • serves      │  proxy   │ • gunicorn      │  TCP    │ • data         │
-│   built React │ ───────► │   N workers     │ ──────► │ • cache table  │
-│ • /api/* pass │          │ • DRF API       │         │ • FTS index    │
-│ • gzip, cache │          │ • job runner    │         │ • volume       │
-│   headers     │          │ • /healthz      │         │                │
-└───────────────┘          └─────────────────┘         └────────────────┘
-        ▲
-        │  browser: SPA + XHR to /api
-     [ user ]
-```
-
-**Three containers. That is the whole system.**
-
-| Container | Responsibility | Notes |
+| Plane | Runs where | What it does |
 |---|---|---|
-| `web` | TLS termination point (optional), static asset serving, single origin for SPA + API | Same-origin removes CORS from production entirely and makes cookie auth simple |
-| `app` | Django under gunicorn with a small worker count; background job runner in the same image | `depends_on: db` with a health check so the first boot is not a race |
-| `db` | Postgres 16 with a named volume | Migrations + idempotent seed run on app start |
+| **Offline training plane** | Local machine / Docker | Generate data, engineer features, fit 7 models, evaluate, write artifacts |
+| **Online serving plane** | Vercel serverless | Accept vitals JSON, run frozen model parameters in TypeScript, return risk + priority |
 
-**Deliberate note on "load balancing":** gunicorn runs multiple worker processes, and nginx distributes across them via a single upstream socket. That is the correct amount of load distribution for this deployment. Anything above it is unjustifiable on one host.
-
-### Startup sequence (must be deterministic)
-```
-db healthy ──► migrate ──► seed (idempotent, skips if data present) ──► gunicorn ──► healthz green
-```
-An organizer running `docker compose up` on a clean machine with no network must land on a working, populated portal. That single property is worth more rubric points than any optimisation in this document.
+The two planes meet at exactly one artifact: `web/lib/model-params.json`.
 
 ---
 
-## 4. Caching strategy
+## 2. Data design
 
-Caching is only defensible when the invalidation story is written down. Ours:
+### 2.1 Target classes
 
-| Layer | What is cached | Backend | Invalidation | Justification |
+| Class | Label | Records (tabular) |
+|---|---|---|
+| NORMAL | 0 | 25,000 |
+| MODERATE | 1 | 25,000 |
+| HIGH | 2 | 25,000 |
+| CRITICAL | 3 | 25,000 |
+
+### 2.2 Three synthetic modalities
+
+| Modality | Generator | Volume | Shape | Consumed by |
 |---|---|---|---|---|
-| **L1 — HTTP** | Built JS/CSS assets | nginx + content-hashed filenames | Filename changes on build | Free, zero risk |
-| **L2 — Computed results** | Leaderboard / normalized ranking per event | Postgres cache table (`django.core.cache.backends.db`) | Explicit `cache.delete()` on any score write, assignment change, or new normalization run — triggered inside the same service function | Ranking is a full-table aggregate; recomputing per page view is wasteful, and its inputs change rarely and through exactly one code path |
-| **L3 — Materialized rows** | `normalized_score` rows per run | Postgres table (not a cache — persisted, versioned by `run_id`) | Never invalidated; a new run writes a new `run_id` | Makes results reproducible and auditable, which is worth more than the speed |
-| **L4 — Per-request memoization** | Role lookup `(user, event) → role` | Request-local dict | Dies with the request | Role is checked on nearly every endpoint; caching it beyond a request would be an authorization bug |
-| **Explicitly NOT cached** | Judge dashboards, submission detail, vote counts during voting | — | — | Freshness matters more than a few milliseconds, and stale judging data is an integrity problem |
+| **Tabular** | `src/data/tabular_generator.py` | 100,000 records | `(100000, 22)` after engineering | KNN, LR, DT, RF |
+| **Temporal** | `src/data/temporal_generator.py` | 20,000 sequences | `(20000, 60, 6)` | GRU, LSTM |
+| **Signal** | `src/data/signal_generator.py` | 20,000 waveforms | `(20000, 1, 500)` | 1D CNN |
 
-**Rule:** anything that affects who-wins is either uncached or cached with a version key. Never a TTL guess.
+Generation strategies:
 
-**Why Postgres as the cache backend rather than Redis:** it is already running, it is transactional (a cache write can join the same transaction as the data write), it survives restart, and it costs zero extra containers. At a few thousand keys the latency difference is irrelevant.
+- **Tabular** — scenario-based sampling. Each class is produced from a different
+  physiological scenario (healthy baseline, compensated stress, decompensating, and
+  peri-arrest), with bounded noise so distributions overlap realistically rather than
+  being trivially separable.
+- **Temporal** — Markov latent-state trajectories over six vital channels for 60
+  timesteps, so deterioration is a *process* rather than a single point.
+- **Signal** — ECG-like P/QRS/T waveform synthesis at 500 Hz for one second
+  (500 samples), with four pattern families matching the four risk classes.
 
----
+### 2.3 Raw features (14 columns)
 
-## 5. Background work without a broker
+`case_id`, `age`, `sex`, `heart_rate`, `systolic_bp`, `diastolic_bp`, `spo2`,
+`temperature`, `respiratory_rate`, `chest_pain`, `breathing_difficulty`, `dizziness`,
+`unconsciousness`, `bleeding_injury`
 
-Slow operations: normalization runs, CSV/JSON exports, certificate signing in bulk, webhook delivery with retries.
+`case_id` is an identifier, never a model input.
 
-These must not run inside the request. But Celery + a broker is three containers for jobs that take under a second here. The middle path:
+### 2.4 Derived features (9)
 
-- A `job` table (`id, kind, payload, status, attempts, run_after, result, error`) — the queue lives in Postgres.
-- A worker thread inside the app container polls with `SELECT ... FOR UPDATE SKIP LOCKED`, which is exactly how a real job queue avoids double-processing, and is safe across gunicorn workers.
-- Webhooks use the **outbox pattern**: the row that triggers the webhook and the outbox entry are written in the *same transaction*, so a crash cannot lose a notification or send one for a rolled-back change. Retries use exponential backoff with a cap.
-- The job table doubles as a visible audit surface: an organizer can see which exports ran and which webhooks failed.
-
-This gives real queue semantics (at-least-once delivery, retries, no double-processing, crash safety) with **zero extra containers**, and it is straightforwardly explainable in the demo. If profiling ever justified Celery, the `job` table interface is the seam to swap behind.
-
----
-
-## 6. Data layer rules
-
-| Rule | Reason |
-|---|---|
-| Every foreign key that is filtered on gets an index; composite index where the query filters on two columns together (e.g. `(event_id, status)`) | Query plans, not vibes |
-| Uniqueness is a **database constraint**, never only a serializer check | Serializer checks are check-then-act and lose the race under concurrency |
-| Case-insensitive uniqueness via `UniqueConstraint(Lower("email"))` | `Test@x.com` and `test@x.com` must be one account |
-| Money-free, but score arithmetic uses `numeric`, never `float` | Reproducible ranking; float summation order changes results |
-| All timestamps stored UTC; per-event display timezone stored as data | Deadlines are published in UTC and participants are global |
-| Soft-delete only where an audit trail requires it; otherwise hard delete | Avoids the "deleted rows still counted" class of bug |
-| `select_for_update` around read-modify-write on scores and vote counters | Prevents lost updates |
-| Read paths use `selectors.py` with explicit `.only()` / `select_related` | Stops N+1 before it starts |
-
----
-
-## 7. Security & role isolation (the part that is actually scored)
-
-| Control | Implementation |
-|---|---|
-| Default deny | `DEFAULT_PERMISSION_CLASSES = ["rest_framework.permissions.IsAuthenticated"]`; public endpoints opt in with `AllowAny` explicitly |
-| Role resolution | `(user, event) → role` from the `event_role` table on every request; never from a client-supplied field |
-| Object-level checks | A judge may read a submission **only** if an `assignment` row links them to it; enforced in the queryset, not with an `if` after fetching |
-| Conflict of interest | Assignment algorithm refuses to assign a judge to their own team's submission; enforced again at score-write time |
-| Results embargo | Score and ranking endpoints return 403 until `results_published_at`, including for the API and CSV export |
-| Password policy | Django's `AUTH_PASSWORD_VALIDATORS` invoked in the serializer (configuring them in settings does nothing on its own) |
-| Rate limiting | Per-scope throttles on register, login, vote, comment |
-| Secrets | Environment only; `.env` never committed; container reads real env vars |
-| Audit | Append-only log with actor, action, entity, before/after payload; no UPDATE/DELETE grants |
-
-**Threat model note (bonus +3):** the attacks named in the brief — Sybil voting, ballot stuffing, submission scraping, judge collusion, deadline gaming — each map to a control above. Scraping in particular is why identifiers are UUIDs rather than sequential integers: sequential IDs let an attacker enumerate every submission by counting.
-
----
-
-## 8. Performance budget (what "fast enough" means here)
-
-Targets, measured with the fixture dataset — not aspirational numbers:
-
-| Endpoint | Budget | Technique |
+| Feature | Formula | Rationale |
 |---|---|---|
-| Gallery list (paginated, 24/page) | < 150 ms | index + `select_related` + pagination |
-| Gallery search | < 200 ms | GIN index on `tsvector` |
-| Judge dashboard | < 150 ms | one query with aggregates, no N+1 |
-| Score submit | < 100 ms | single transaction, one lock |
-| Normalization run (300 projects × 50 judges) | < 5 s, backgrounded | numpy vectorised, one bulk insert |
-| Full CSV export | < 3 s, streamed | server-side cursor, `StreamingHttpResponse` |
+| `pulse_pressure` | SBP − DBP | Perfusion proxy |
+| `mean_arterial_pressure` | DBP + PP/3 | Standard MAP estimate |
+| `shock_index` | HR / SBP | Early decompensation marker |
+| `age_group` | ≤18 → 0, ≤65 → 1, else 2 | Ordinal risk cohort |
+| `spo2_severity` | ≤88 → 0, ≤94 → 1, else 2 | Hypoxia banding |
+| `tachycardia_flag` | HR > 100 | Binary clinical criterion |
+| `hypotension_flag` | SBP < 90 | Binary clinical criterion |
+| `fever_flag` | Temp > 38.0 °C | Binary clinical criterion |
+| `tachypnea_flag` | RR > 20 | Binary clinical criterion |
 
-If a number is missed, the fix is a query plan, not a cache.
+**Total feature dimension: 22** (13 numeric vitals + 9 derived).
+
+The bin edges are right-closed, matching `pandas.cut`, and are reimplemented with
+identical semantics in TypeScript (Section 9).
 
 ---
 
-## 9. What we would do differently at real scale
+## 3. Preprocessing and splitting
 
-Included because the ability to name the boundary is part of engineering judgment:
+| Stage | Implementation | Notes |
+|---|---|---|
+| Splitting | `src/preprocessing/splitters.py` | 70/15/15, stratified; temporal splits are **ID-based** so one trajectory cannot appear in two splits |
+| Imputation | `SimpleImputer(strategy="median")` | Fitted on train only |
+| Scaling | `StandardScaler` | Fitted on train only; `(x − mean) / scale` |
+| Label encoding | Fixed mapping | NORMAL=0, MODERATE=1, HIGH=2, CRITICAL=3 |
+| Leakage guard | Transform-only on val/test | Enforced by the pipeline API and covered by a test |
 
-| At 100× this load | Change |
+Split sizes:
+
+| Modality | Train | Val | Test |
+|---|---|---|---|
+| Tabular | 70,000 | 15,000 | 15,000 |
+| Temporal | 14,000 | 3,000 | 3,000 |
+| Signal | 14,000 | 3,000 | 3,000 |
+
+The fitted pipeline (imputer + scaler) is serialized to
+`models/preprocessing_pipeline.pkl` and is what the export script reads.
+
+---
+
+## 4. Models
+
+### 4.1 Classical ML (tabular)
+
+| Model | Hyperparameters | Val Acc | Test Acc | Test Macro F1 |
+|---|---|---|---|---|
+| KNN | `n_neighbors=5` | 95.86% | 95.86% | 0.9586 |
+| Logistic Regression | `max_iter=1000`, `C=1.0`, multinomial, lbfgs | 97.06% | 97.03% | 0.9703 |
+| Decision Tree | `max_depth=10` | 96.41% | 96.61% | 0.9662 |
+| **Random Forest** ⭐ | `n_estimators=200`, `max_depth=20` | **98.09%** | **98.05%** | **0.9805** |
+
+Random Forest is the most accurate tabular model; Logistic Regression is the one that
+is **served** (Section 10 explains why that is not a contradiction).
+
+### 4.2 Deep learning (PyTorch)
+
+| Model | Input | Architecture | Val Acc | Test Acc | Test Macro F1 | Train time |
+|---|---|---|---|---|---|---|
+| **Physio1DCNN** ⭐ | `(batch, 1, 500)` | Conv1D 1→16 (k=7) → BN → ReLU → Pool → Conv1D 16→32 → BN → ReLU → Pool → AdaptiveAvgPool(16) → Dropout(0.3) → FC | **99.73%** | **99.73%** | **0.9973** | 117 s |
+| **PhysioRNN** (2-layer GRU) | `(batch, 60, 6)` | GRU (hidden 128, 2 layers) → last timestep → Dropout(0.2) → FC | 94.03% | 93.70% | 0.9362 | 530 s |
+| **PhysioLSTM** | `(batch, 60, 6)` | LSTM (hidden 128, 2 layers) → last timestep → Dropout(0.2) → FC | 92.93% | 92.40% | 0.9226 | 436 s |
+
+Training protocol: 20 epochs, Adam (lr = 1e-3), CrossEntropyLoss, batch size 128, best
+checkpoint selected by validation accuracy, CPU-only PyTorch 2.15. Kernel size for the
+CNN is 7; hidden size for both recurrent models is 128. Full run ≈ 18 minutes.
+
+Artifacts:
+
+```
+models/deep/cnn_1d_best.pt    30 KB
+models/deep/rnn_best.pt      598 KB
+models/deep/lstm_best.pt     794 KB
+experiments/results/deep_results.json   # per-epoch history + final metrics
+```
+
+All three checkpoints were verified to reload and emit `[batch, 4]` logits. Weights are
+git-ignored, so a clone must retrain:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+python3 run_pipeline.py --deep-only --skip-generate
+```
+
+---
+
+## 5. Evaluation methodology
+
+Metrics are computed by `src/evaluation/metrics.py` with scikit-learn:
+accuracy, macro-F1, precision, recall, per-class support, and a confusion matrix.
+
+| Stage | Data | Reported |
+|---|---|---|
+| Fit | train split | training accuracy / macro-F1 |
+| Model selection | validation split | validation accuracy (best checkpoint) |
+| Final claim | test split, never seen during fit or selection | accuracy, macro-F1, per-class report |
+
+Macro-F1 is the headline metric because the four classes are equally important and a
+model that ignores CRITICAL to optimize accuracy would be unacceptable. Results are
+persisted to `experiments/results/{classical,deep}_results.json` and served by
+`/api/metrics`.
+
+---
+
+## 6. Alert priority mapping
+
+| Predicted risk | Priority | Simulated alert level |
+|---|---|---|
+| CRITICAL | **P0** | `EMERGENCY_SIMULATION_CRITICAL` |
+| HIGH | **P1** | `EMERGENCY_SIMULATION_HIGH` |
+| MODERATE | **P2** | `SIMULATION_ADVISORY_MODERATE` |
+| NORMAL | **P3** | `SIMULATION_STATUS_NORMAL` |
+
+Implemented in `src/inference/alert_engine.py` (Python) and mirrored in
+`web/lib/inference.ts` (`PRIORITY_MAP`, `ALERT_COLOR`) so offline and hosted behaviour
+agree. Every payload carries
+`"disclaimer": "EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE"`.
+
+---
+
+## 7. Serving architecture (Vercel)
+
+### 7.1 Topology
+
+```
+Browser ──POST /api/predict──► Next.js serverless function (Node.js)
+                                     │
+                                     ▼
+                            web/lib/inference.ts      ← pure TypeScript
+                                     │
+                                     ▼
+                            web/lib/model-params.json ← frozen model (4.4 KB)
+```
+
+Only `web/` is deployed. `data/`, `models/`, `experiments/`, `.venv`, and the training
+source are git-ignored and never uploaded. **No Python, scikit-learn, PyTorch, joblib,
+or pickle executes on Vercel.**
+
+| Route | Type | Purpose |
+|---|---|---|
+| `/` | Static (prerendered) | Interactive vitals form and results dashboard |
+| `/api/predict` | Dynamic function | POST inference; GET health check + accepted ranges |
+| `/api/metrics` | Dynamic function | Classical + deep metrics and dataset stats |
+
+### 7.2 The frozen model artifact
+
+`web/lib/model-params.json` is generated by
+`scripts/export_web_model_params.py` from the fitted sklearn objects:
+
+| Source (sklearn) | Exported key | Size |
+|---|---|---|
+| `SimpleImputer.statistics_` | `imputer_statistics` | 22 numbers |
+| `StandardScaler.mean_` | `scaler_mean` | 22 numbers |
+| `StandardScaler.scale_` | `scaler_scale` | 22 numbers |
+| `LogisticRegression.coef_` | `coef` | 4 × 22 numbers |
+| `LogisticRegression.intercept_` | `intercept` | 4 numbers |
+| `LogisticRegression.classes_` | `classes` | 4 integers |
+
+Total ≈ 4.4 KB, committed to git, versioned with the code. The export script refuses to
+write a model that scores below 0.95 on the held-out split (see Section 12).
+
+---
+
+## 8. Production inference pipeline: input to output
+
+This is the exact path a request takes on the deployed system. Steps 1–8 are in
+`web/lib/inference.ts`; the HTTP wrapper is `web/app/api/predict/route.ts`.
+
+### Step 0 — Browser
+
+`web/app/page.tsx` holds 13 vitals in React state (number inputs for seven measured
+values, a sex selector, five symptom toggles). On submit it issues:
+
+```http
+POST /api/predict
+Content-Type: application/json
+
+{"age":67,"sex":1,"heart_rate":142,"systolic_bp":72,"diastolic_bp":44,
+ "spo2":84,"temperature":39.4,"respiratory_rate":34,
+ "chest_pain":1,"breathing_difficulty":1,"dizziness":1,
+ "unconsciousness":0,"bleeding_injury":0}
+```
+
+The route validates that the body is a JSON object, then calls `predictRisk`.
+
+### Step 1 — Normalize (`normalizeVitals`)
+
+- Missing fields fall back to the healthy-adult baseline (`DEFAULT_VITALS`).
+- Numeric strings are coerced (`"72"` → `72`).
+- `temperature_unit: "F"` (or `"fahrenheit"`, `"°F"`) converts
+  `(F − 32) × 5/9` before anything else. The default is Celsius.
+
+### Step 2 — Validate (`validateVitals`)
+
+Every field is checked against `VITALS_RANGES`; the symptom flags must be exactly 0 or
+1. Any violation throws `VitalsValidationError`, which the route converts to
+**HTTP 400** with a per-field explanation. The model never sees an out-of-range record.
+(Section 11 lists the ranges and the rationale for each bound.)
+
+### Step 3 — Engineer features (`engineerFeatures`)
+
+13 normalized vitals + 9 derived features = the same 22 columns used in training:
+
+```
+pulse_pressure         = systolic_bp − diastolic_bp
+mean_arterial_pressure = diastolic_bp + pulse_pressure / 3
+shock_index            = heart_rate / systolic_bp
+age_group              = age ≤ 18 → 0, ≤ 65 → 1, else 2
+spo2_severity          = spo2 ≤ 88 → 0, ≤ 94 → 1, else 2
+tachycardia_flag       = heart_rate > 100
+hypotension_flag       = systolic_bp < 90
+fever_flag             = temperature > 38.0
+tachypnea_flag         = respiratory_rate > 20
+```
+
+The ordering is taken from `params.features`, so the model parameters and the feature
+construction can never drift apart.
+
+### Step 4 — Impute
+
+`value = Number.isFinite(raw) ? raw : imputer_statistics[i]`
+
+This mirrors `SimpleImputer(strategy="median")`. With validation in place it is
+effectively unreachable for HTTP traffic, but it is retained for exact parity with the
+training pipeline (e.g. a zero systolic BP would produce a non-finite shock index).
+
+### Step 5 — Standardize
+
+`z_i = (x_i − scaler_mean_i) / scaler_scale_i`
+
+Exactly `StandardScaler.transform`, including the guard for a zero scale factor.
+
+### Step 6 — Score four logits
+
+`logit_c = Σ_i coef[c][i] × z_i + intercept[c]`
+
+Four classes × 22 weights = 88 multiplications plus 4 intercepts. This is the entire
+"model" at runtime.
+
+### Step 7 — Softmax
+
+`P(c) = exp(logit_c − max) / Σ exp(logit_k − max)`
+
+The max-subtraction is a numerical-stability measure and does not change the result.
+
+### Step 8 — Decide and map to an alert
+
+`predicted = argmax(P)` → class label → priority `P0–P3`, alert colour, and the
+educational disclaimer.
+
+### Worked example — critical preset
+
+Input: 67 y, male, HR 142, BP 72/44, SpO₂ 84, 39.4 °C, RR 34, chest pain +
+breathing difficulty + dizziness.
+
+| Stage | Values |
 |---|---|
-| Sustained concurrent judging | Move cache to Redis; keep the same cache-key contract |
-| Job volume grows | Swap the `job` table worker for Celery behind the same service interface |
-| Many concurrent events | Read replica for gallery/search traffic; writes stay on primary |
-| Multi-tenant SaaS | Row-level security by event, then schema-per-tenant |
-| Global audience | CDN for static assets and gallery images |
+| Raw (first 8) | `67, 1, 142, 72, 44, 84, 39.4, 34` |
+| Standardized z (first 8) | `0.65, 1.00, 1.08, −1.08, −1.11, −0.89, 0.95, 1.29` |
+| Logits | NORMAL −38.02 · MODERATE −2.66 · HIGH 17.97 · CRITICAL 22.70 |
+| Softmax | 0.0000 · 0.0000 · 0.0088 · **0.9912** |
+| Output | `CRITICAL`, `P0`, confidence 0.9912 |
 
-None of these are implemented, because none of them are true today. The seams (`services.py`, the cache-key contract, the `job` table) are placed so each swap is local.
+The deployed API returns exactly these numbers, which is what the parity test in
+Section 12 asserts.
+
+### Why this design
+
+The model is **not** "called" from a Python process at runtime; it is re-expressed as
+arithmetic. Consequences:
+
+- cold start is a JSON import, not a model load;
+- the function has no native dependencies and cannot break on a wheel/Python upgrade;
+- the served decision function is auditable line by line;
+- the only thing that can go stale is the JSON, which the export guard now checks.
 
 ---
 
-## 10. Open items to reconcile with the published specification
+## 9. Model selection for serving
 
-1. Whether the acceptance suite drives the HTTP API directly, and what authentication it expects (session cookie vs bearer token) — this decides the auth mechanism.
-2. Required normalization method(s) — per-judge z-score assumed until the spec says otherwise.
-3. Fixture data shape — drives the seed script and possibly field names.
-4. Whether file uploads are in scope (local volume only if so).
-5. Whether one submission per team or per track.
+| Model | Test Acc | Served? | Reason |
+|---|---|---|---|
+| **Logistic Regression** | 97.03% | ✅ | 4 KB of numbers, exact rules, calibrated probabilities |
+| Random Forest | 98.05% | ❌ | +1.02 pp requires exporting 200 trees and a traversal evaluator (or a multi-MB ONNX runtime) |
+| KNN | 95.86% | ❌ | would need the 70,000 × 22 training matrix (~12 MB) embedded and per-request distance computation |
+| Decision Tree | 96.61% | ❌ | portable (depth 10) but strictly less accurate than LR |
+| 1D CNN | 99.73% | ❌ | needs a PyTorch runtime and a 500-sample ECG, which the vitals form cannot produce |
+| GRU | 93.70% | ❌ | needs a 60-step × 6-channel trajectory, not available from the form |
+| LSTM | 92.40% | ❌ | same as GRU |
+
+The decision is **modality- and deployability-driven**, not accuracy-driven:
+
+1. The form produces tabular vitals, so only the four classical models are eligible.
+2. Among those, LR is the only one whose complete decision function fits in a small
+   JSON file and runs as plain arithmetic.
+3. Softmax probabilities are needed for confidence and alert thresholds; LR provides
+   them directly.
+4. The 1.02 pp gap to Random Forest is the price of a zero-dependency deployment, and
+   it is stated openly rather than hidden.
+
+The deep models are **real and trained** — they are simply not the right artifact for a
+13-field web form. Their metrics are exposed through `/api/metrics` with the input
+modality spelled out.
 
 ---
 
-## Appendix A — Configuration deltas this document implies
+## 10. Input validation contract
+
+### 10.1 Accepted ranges
+
+| Field | Min | Max | Unit / notes |
+|---|---|---|---|
+| `age` | 0 | 120 | years |
+| `sex` | 0 | 1 | 0 = female, 1 = male |
+| `heart_rate` | 20 | 300 | bpm |
+| `systolic_bp` | 40 | 300 | mmHg; 40 because real critical records reach 45 |
+| `diastolic_bp` | 20 | 200 | mmHg |
+| `spo2` | 50 | 100 | percent |
+| `temperature` | 25 | 45 | **Celsius** |
+| `respiratory_rate` | 4 | 80 | breaths/min |
+| `chest_pain` … `bleeding_injury` | 0 | 1 | flags only |
+
+Design notes:
+
+- Bounds are derived from the generated dataset wherever possible. An earlier pass used
+  `systolic_bp ≥ 50` and rejected 1,991 genuine critical records (SBP 45–49), which is
+  how the lower bound was corrected.
+- A cross-field `diastolic < systolic` rule was deliberately **not** enforced: the
+  generator itself emits 15 such rows, so rejecting them would be inconsistent with the
+  training distribution.
+- Native browser `min`/`max` on the form give immediate feedback; the server check is
+  the authority because the API is public.
+
+### 10.2 Error shape
+
+```json
+{
+  "error": "Vitals out of range",
+  "issues": [
+    {
+      "field": "temperature",
+      "value": 98.6,
+      "min": 25,
+      "max": 45,
+      "message": "temperature looks like Fahrenheit; send Celsius or add \"temperature_unit\": \"F\""
+    }
+  ]
+}
+```
+
+Malformed JSON returns `400 {"error": "Invalid JSON body"}`; a non-object body returns
+`400 {"error": "Request body must be a JSON object of vitals"}`. Unexpected failures
+return `500` with a message, never a fabricated prediction.
+
+### 10.3 Fahrenheit handling
+
+```bash
+curl -X POST .../api/predict -H 'Content-Type: application/json' \
+  -d '{"temperature": 98.6, "temperature_unit": "F", ...}'
+```
+
+Without the unit, 98.6 is rejected with the hint above. This matters because 98.6 °F is
+a perfectly normal body temperature and, unscaled, it reads as a lethal fever — before
+validation existed it produced `CRITICAL` at 100% confidence.
+
+---
+
+## 11. API reference
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/` | GET | Interactive demo UI |
+| `/api/predict` | POST | Vitals JSON → risk class, priority, probabilities |
+| `/api/predict` | GET | Health check, `accepted_ranges`, `temperature_unit`, sample prediction |
+| `/api/metrics` | GET | Classical metrics, deep metrics, dataset and pipeline stats |
+
+All responses include permissive CORS headers (`*`) and `OPTIONS` returns `204`.
+
+### Example request
+
+```bash
+curl -X POST https://your-app.vercel.app/api/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"age":67,"heart_rate":142,"systolic_bp":72,"diastolic_bp":44,
+       "spo2":84,"temperature":39.4,"respiratory_rate":34,
+       "chest_pain":1,"breathing_difficulty":1}'
+```
+
+### Example response
+
+```json
+{
+  "predicted_risk_class": "CRITICAL",
+  "priority": "P0",
+  "confidence": 0.9912,
+  "probabilities": {"NORMAL": 0, "MODERATE": 0, "HIGH": 0.0088, "CRITICAL": 0.9912},
+  "alert_color": "#ef4444",
+  "disclaimer": "EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE"
+}
+```
+
+### Offline inference (Python)
 
 ```python
-# config/settings.py
+import yaml
+from src.inference.predictor import HealthRiskPredictor
+from src.inference.alert_engine import SimulatedAlertEngine
 
-DATABASES = {
-    "default": {
-        **env.db("DATABASE_URL"),
-        "CONN_MAX_AGE": env.int("CONN_MAX_AGE", default=60),
-        "CONN_HEALTH_CHECKS": True,
-    }
+config = yaml.safe_load(open("config.yaml"))
+
+predictor = HealthRiskPredictor.from_saved_model(
+    model_path    = "models/classical/random_forest.joblib",
+    pipeline_path = "models/preprocessing_pipeline.pkl",
+    config        = config,
+)
+
+record = {
+    "case_id": "DEMO_001", "age": 67, "sex": 1,
+    "heart_rate": 142, "systolic_bp": 72, "diastolic_bp": 44,
+    "spo2": 84, "temperature": 39.4, "respiratory_rate": 34,
+    "chest_pain": 1, "breathing_difficulty": 1,
+    "dizziness": 1, "unconsciousness": 0, "bleeding_injury": 0,
 }
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
-        "LOCATION": "cache_table",
-    }
-}
+result = predictor.predict_record(record)
+# → {'predicted_risk_class': 'CRITICAL', 'confidence': 0.98, 'probabilities': {...}}
 
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-    ],
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",   # default deny
-    ],
-    "DEFAULT_PAGINATION_CLASS":
-        "rest_framework.pagination.LimitOffsetPagination",
-    "PAGE_SIZE": 24,
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.ScopedRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "register": "5/hour",
-        "login": "10/hour",
-        "vote": "60/hour",
-        "comment": "20/hour",
-    },
-    "EXCEPTION_HANDLER": "apps.core.exceptions.handler",   # uniform error shape
-}
+alert = SimulatedAlertEngine(config).generate_alert(result)
+# → {'priority': 'P0', 'alert_level': 'EMERGENCY_SIMULATION_CRITICAL', ...}
 ```
 
 ---
 
-*This document is a living design record. Every entry in §1.2 is a decision we must be able to defend, not an omission we must apologise for.*
+## 12. Verification methodology
+
+### 12.1 TypeScript ↔ Python parity
+
+300 records drawn from the 100K dataset (75 per class) were scored by both the Python
+`PreprocessingPipeline` + `LogisticRegression` and the deployed `/api/predict`:
+
+| Check | Result |
+|---|---|
+| Records compared | 300 (0 rejected) |
+| Label mismatches | **0** |
+| Maximum probability difference | **0.000000** |
+
+This covers the whole chain — normalization, feature engineering, imputation, scaling,
+coefficients, softmax — not just the coefficients.
+
+### 12.2 Deployed-parameter integrity
+
+`web/lib/model-params.json` is scored against `data/processed/X_tab_test.npy` on every
+export:
+
+```
+Held-out accuracy from exported params: 0.9703
+```
+
+The script exits non-zero below 0.95 and prints retraining instructions.
+
+**Why the guard exists.** `pytest` previously constructed `ClassicalTrainer` with the
+real `config.yaml`, so each test run overwrote `models/classical/*.joblib` and
+`experiments/results/classical_results.json` with 200-sample smoke models. An export
+taken after such a run shipped a model trained on ~140 records: **92.05%** test
+accuracy behind a page claiming 97.03%. Fixes:
+
+1. the test's trainer now writes to `tmp_path`, verified by comparing artifact
+   checksums before and after `pytest`;
+2. classical models were retrained on the full dataset, reproducing
+   95.86 / 97.03 / 96.61 / 98.05 exactly;
+3. the JSON was re-exported (0.9703 verified);
+4. the export guard was added so the failure cannot recur silently.
+
+### 12.3 Live deployment checks
+
+Performed with HTTP probes and headless Chrome against the Vercel URL:
+
+| Check | Result |
+|---|---|
+| `/` and all 8 `_next` assets | `200` |
+| Hydration / console errors | 0 errors, 0 failed requests |
+| Preset buttons + Predict | functional |
+| CORS preflight | `204` with expected headers |
+| Invalid JSON / array body | `400` |
+| Mobile layout at 390 px | no horizontal overflow |
+
+> Operational note: the first live check was run against the stale build described in
+> 12.2, so the numbers above reflect the corrected local build plus the original
+> deployment's routing/asset health. Re-run the probes after the next deploy.
+
+---
+
+## 13. Reproducibility
+
+| Setting | Value |
+|---|---|
+| Random seed | 42 (generators, NumPy, scikit-learn, PyTorch) |
+| Split | 70% / 15% / 15%, stratified |
+| Tabular generator | 25,000 samples per class |
+| Scaling | `StandardScaler`, fit on train only |
+| Label encoding | NORMAL=0, MODERATE=1, HIGH=2, CRITICAL=3 |
+| Configuration | `config.yaml` (single source of truth for paths and hyperparameters) |
+
+Retraining reproduces the published metrics exactly, which is how the 95.86 / 97.03 /
+96.61 / 98.05 figures were re-confirmed after the artifact incident.
+
+---
+
+## 14. Test strategy — 54/54 passing
+
+```bash
+pytest tests -q      # 54 passed in ~5 s
+```
+
+| Suite | Tests | Coverage |
+|---|---|---|
+| `TestTabularGenerator` | 7 | shape, class balance, ranges, physiological validity |
+| `TestTemporalGenerator` | 5 | shapes, label range, physiological values, dtypes |
+| `TestSignalGenerator` | 5 | shape, labels, class balance, single-signal invariants |
+| `TestFeatureEngineering` | 3 | derived columns, pulse-pressure formula, binary flags |
+| `TestPreprocessingPipeline` | 6 | fit/transform, NaN-free output, leakage guard, save/load |
+| `TestDataSplitters` | 3 | sizes, no `case_id` overlap, no temporal leakage |
+| `TestClassicalTraining` | 3 | all four models present, metrics in [0,1], better than random |
+| `TestInferencePredictor` | 4 | result keys, valid class, probabilities sum to 1, batch mode |
+| `TestAlertEngine` | 5 | P0–P3 mapping, disclaimer present |
+| `TestDataValidator` | 4 | schema, report structure, duplicates, range violations |
+| Schema/config/import units | 9 | schema definitions, config parsing, module imports |
+
+Tests are **hermetic with respect to artifacts**: model training inside tests writes to
+a temporary directory, never to `models/` or `experiments/`.
+
+---
+
+## 15. Project structure
+
+```
+ai-emergency_health_assistant/
+├── Dockerfile                     # Single-command build & run
+├── docker-compose.yml             # Volume-mounted compose setup
+├── generate_data.py               # Standalone data generation script
+├── run_pipeline.py                # End-to-end pipeline orchestrator
+├── config.yaml                    # All hyperparameters & paths (seed: 42)
+├── requirements.txt               # Python dependencies
+├── SYSTEMDESIGN.md                # This document
+├── README.md                      # Goals, objectives, achievements
+├── architecture.md                # Visual architecture overview
+├── BUILD_STATUS.md                # Completion status + model results
+├── train_classical.py             # Standalone entry points (per model family)
+├── train_cnn.py
+├── train_rnn.py
+├── train_lstm.py
+│
+├── data/
+│   ├── raw/                       # tabular_raw.csv, temporal_*.npy, signal_*.npy
+│   ├── interim/                   # intermediate processed files
+│   └── processed/                 # X_tab_*.npy, y_tab_*.npy arrays
+│
+├── models/
+│   ├── preprocessing_pipeline.pkl # Fitted scaler + imputer + label encoder
+│   ├── classical/                 # knn.joblib, logistic_regression.joblib, ...
+│   └── deep/                      # cnn_1d_best.pt, rnn_best.pt, lstm_best.pt
+│
+├── experiments/results/
+│   ├── classical_results.json
+│   ├── deep_results.json
+│   └── pipeline_summary.json
+│
+├── src/
+│   ├── data/
+│   │   ├── tabular_generator.py   # Scenario-based tabular synthesis
+│   │   ├── temporal_generator.py  # Markov latent-state trajectory synthesis
+│   │   ├── signal_generator.py    # P/QRS/T ECG waveform synthesis
+│   │   ├── validator.py           # Schema + range + duplicate validation
+│   │   └── schema.py              # Feature definitions & RiskClass enum
+│   ├── preprocessing/
+│   │   ├── feature_engineering.py # 9 derived clinical features
+│   │   ├── pipeline.py            # Impute → scale → label encode
+│   │   └── splitters.py           # Stratified / ID-based splits
+│   ├── models/
+│   │   ├── classical/             # KNN, LR, DT, RF sklearn wrappers
+│   │   └── deep/                  # Physio1DCNN, PhysioRNN, PhysioLSTM
+│   ├── training/
+│   │   ├── train_classical.py     # Classical ML training orchestrator
+│   │   └── train_deep.py          # PyTorch deep learning trainer
+│   ├── evaluation/
+│   │   └── metrics.py             # Accuracy, F1, confusion matrix, reports
+│   ├── explainability/
+│   │   ├── feature_importance.py  # Tree importances, LR coefficients
+│   │   └── shap_explainer.py      # SHAP TreeExplainer integration
+│   ├── inference/
+│   │   ├── predictor.py           # Single + batch risk inference
+│   │   └── alert_engine.py        # P0–P3 simulated alert routing
+│   └── utils/
+│       ├── logger.py              # Structured logging
+│       ├── config_loader.py       # YAML config parsing
+│       └── seed.py                # Global seed setter
+│
+├── web/                           # Next.js 16 demo (deployed on Vercel)
+│   ├── app/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx               # Interactive vitals form + results
+│   │   └── api/
+│   │       ├── predict/route.ts   # POST /api/predict — live inference
+│   │       └── metrics/route.ts   # GET  /api/metrics — training results
+│   ├── lib/
+│   │   ├── inference.ts           # Feature engineering + LR in TypeScript
+│   │   └── model-params.json      # Exported scaler/imputer/coef parameters
+│   ├── public/                    # Static assets (currently empty)
+│   ├── package.json
+│   └── next.config.mjs
+│
+├── notebooks/                     # Exploration space (currently empty)
+├── reports/                       # Report output directory (currently empty)
+│
+├── scripts/
+│   └── export_web_model_params.py # Re-export model JSON + accuracy guard
+│
+└── tests/
+    ├── test_pipeline.py           # 45 integration tests
+    ├── test_schema.py             # Schema & feature definition tests
+    ├── test_config.py             # Config parsing tests
+    └── test_imports.py            # Module import sanity tests
+```
+
+---
+
+## 16. Deployment procedure
+
+### Option A — Vercel dashboard (recommended)
+
+1. Push the repository to GitHub.
+2. Import it at [vercel.com/new](https://vercel.com/new).
+3. **Set Root Directory to `web`** — the only change required.
+4. Framework preset auto-detects Next.js; keep default build settings.
+5. Deploy. No environment variables are needed.
+
+### Option B — Vercel CLI
+
+```bash
+cd web
+npm install
+npx vercel --prod
+```
+
+### Requirements and verification
+
+- Node.js ≥ 20.9 (Vercel's default Node 22 is fine); the app currently pins Next.js
+  16.4.6.
+- After deploying, confirm the new contract:
+
+```bash
+curl -s https://your-app.vercel.app/api/predict | jq '.status, .accepted_ranges'
+```
+
+- Do **not** deploy from the repository root: the root also contains the training
+  pipeline and unrelated `backend/`/`frontend/` folders that would confuse framework
+  detection.
+
+### Re-exporting the served model after retraining
+
+```bash
+python3 run_pipeline.py --classical-only --skip-generate
+python3 scripts/export_web_model_params.py      # fails if accuracy < 0.95
+```
+
+---
+
+## 17. Operational notes and known limitations
+
+| Item | Status / action |
+|---|---|
+| Deep model weights | Git-ignored by design (≈1.4 MB); retrain locally. Not served on Vercel. |
+| Served model | Logistic Regression only; other models' metrics are reported, not served. |
+| `backend/.env` | Untracked but present in git history — rotate `SECRET_KEY` and the DB password. |
+| Unrelated folders | `backend/`, `frontend/` are a separate auth demo; excluded from deployment by Root Directory `web`. |
+| No auth on `/api/*` | Intentional for a public demo; add rate limiting before advertising the API. |
+| Data provenance | Fully synthetic; no real patient data is ever used or required. |
+| Clinical use | Not permitted. The disclaimer is present in code, UI, and every API response. |
+
+## 18. Design decisions worth defending
+
+| Decision | Alternative rejected | Why |
+|---|---|---|
+| Freeze the model into JSON parameters | Ship a pickle/ONNX/PyTorch bundle | Vercel functions stay dependency-free, cold start is negligible, and the decision function is auditable |
+| Serve LR, report RF | Serve the most accurate tabular model | RF would need a tree evaluator or a multi-MB runtime for +1.02 pp |
+| Validate ranges server-side | Trust the HTML form | The API is public; native constraints are bypassable |
+| Celsius default + explicit unit | Accept both silently | Silent unit confusion produced a 100%-confidence CRITICAL reading for a healthy adult |
+| Test artifacts in `tmp_path` | Let tests reuse `models/` | A test run previously overwrote production artifacts (Section 12.2) |
+| Keep the 22-feature pipeline in TS | Reimplement engineered features differently | Parity must be exact, not approximate |
+| CPU-only training | Require a GPU | Reproducibility on any laptop matters more than an 18-minute run being 5 minutes |
+
+---
+
+*End of technical design record. For goals, objectives, achievements, and a narrative
+summary of the work, see [`README.md`](README.md).*

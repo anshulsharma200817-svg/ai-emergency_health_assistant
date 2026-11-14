@@ -8,7 +8,7 @@
 > diagnosis, treatment recommendations, ambulance dispatch, hospital
 > integration, real sensor acquisition, GPS, or clinical decision-making.
 
-- **Stage**: Feature complete + Vercel deployment ready
+- **Stage**: Feature complete · models trained · 54/54 tests passing · deployed on Vercel
 - **Pipeline**: Data generation → validation → preprocessing → training →
   evaluation → inference → alert routing
 - **Dataset**: 100,000 tabular + 20,000 temporal + 20,000 signal synthetic records
@@ -76,12 +76,36 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
 1. `cd web && npm run build` — production build succeeds; `/` static,
    `/api/predict` and `/api/metrics` dynamic functions.
 2. Started the production server and called both API routes — valid JSON.
-3. **Parity check**: sent 616 randomized records (including age/SpO₂ bin
-   boundaries) to `/api/predict` and compared against the Python
-   `PreprocessingPipeline` + `LogisticRegression`:
-   - **0 label mismatches**
-   - **max probability difference 5.0e-05** (JSON 4-decimal rounding)
+3. **Parity check**: sent 300 records drawn from the 100K dataset (75 per class)
+   to `/api/predict` and compared against the Python `PreprocessingPipeline` +
+   `LogisticRegression`:
+   - **0 label mismatches**, 0 rejections
+   - **max probability difference 0.000000**
 4. `pytest tests -q` — 54 passed.
+5. Live Vercel deployment checked with headless Chrome: page and all `_next`
+   assets 200, hydration clean (0 console errors, 0 failed requests), presets and
+   prediction button work, no horizontal overflow at 390 px.
+
+### Fixed during this verification
+
+- **Stale deployed model.** `pytest` instantiated `ClassicalTrainer` with the real
+  `config.yaml`, so every test run overwrote `models/classical/*.joblib` and
+  `experiments/results/classical_results.json` with 200-sample smoke models. The
+  last export of `web/lib/model-params.json` happened after such a run, so the
+  live site was serving a model trained on ~140 records (92.05% test accuracy)
+  while displaying 97.03%. Fixed by:
+  - pointing the test's `ClassicalTrainer` at `tmp_path` so it can never touch
+    real artifacts;
+  - retraining classical models on the full dataset (reproduces 95.86 / 97.03 /
+    96.61 / 98.05 exactly) and re-exporting the JSON (verified 0.9703);
+  - adding an accuracy guard to `scripts/export_web_model_params.py` that fails
+    if the exported params score below 0.95 on the held-out split.
+- **No input validation.** Out-of-range vitals (e.g. `temperature: 98.6` in °F,
+  `spo2: 150`) were silently scored and returned `CRITICAL` at 100% confidence.
+  `web/lib/inference.ts` now validates every field against physiological ranges
+  and `/api/predict` returns `400` with per-field messages; Fahrenheit is
+  accepted via `temperature_unit: "F"`. Ranges align with the real dataset
+  (systolic BP down to 40 mmHg is valid, so the lower bound is 40).
 
 ---
 
@@ -93,7 +117,8 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
 4. Deploy — no environment variables, database, or Python runtime needed.
 
 Full instructions, API examples, and re-training notes are in
-[`README.md` §11](README.md#11-deploy-to-vercel).
+[`SYSTEMDESIGN.md` §16](SYSTEMDESIGN.md#16-deployment-procedure). For goals and
+achievements, see [`README.md`](README.md).
 
 ---
 

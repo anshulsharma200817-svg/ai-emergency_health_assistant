@@ -101,8 +101,14 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(vitals),
       })
-      if (!res.ok) throw new Error(`API error: ${res.status}`)
-      const data = await res.json()
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        const issues = Array.isArray(data?.issues)
+          ? data.issues.map((i: { message: string }) => i.message).join(' · ')
+          : null
+        setError(issues || data?.error || `API error: ${res.status}`)
+        return
+      }
       setResult(data)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
@@ -293,7 +299,7 @@ export default function Home() {
                   {[
                     { field: 'age',              label: 'Age (years)',   min: 1,  max: 110, step: 1 },
                     { field: 'heart_rate',       label: 'Heart Rate (bpm)', min: 25, max: 240, step: 1 },
-                    { field: 'systolic_bp',      label: 'Systolic BP (mmHg)', min: 50, max: 260, step: 1 },
+                    { field: 'systolic_bp',      label: 'Systolic BP (mmHg)', min: 40, max: 260, step: 1 },
                     { field: 'diastolic_bp',     label: 'Diastolic BP (mmHg)', min: 30, max: 160, step: 1 },
                     { field: 'spo2',             label: 'SpO₂ (%)', min: 50, max: 100, step: 0.1 },
                     { field: 'temperature',      label: 'Temperature (°C)', min: 30, max: 45, step: 0.1 },
@@ -303,6 +309,9 @@ export default function Home() {
                       <label>{label}</label>
                       <input
                         type="number"
+                        name={field}
+                        id={`vitals-${field}`}
+                        aria-label={label}
                         min={min} max={max} step={step}
                         value={vitals[field as keyof Vitals]}
                         onChange={e => handleChange(field as keyof Vitals, e.target.value)}
@@ -310,8 +319,8 @@ export default function Home() {
                     </div>
                   ))}
                   <div className="form-group">
-                    <label>Sex</label>
-                    <select value={vitals.sex} onChange={e => handleChange('sex', e.target.value)}>
+                    <label htmlFor="vitals-sex">Sex</label>
+                    <select id="vitals-sex" name="sex" value={vitals.sex} onChange={e => handleChange('sex', e.target.value)}>
                       <option value={0}>Female (0)</option>
                       <option value={1}>Male (1)</option>
                     </select>

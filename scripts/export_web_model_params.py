@@ -20,6 +20,7 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import joblib
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +49,32 @@ def main() -> None:
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(params, indent=2) + "\n")
     print(f"Wrote {OUTPUT_PATH} ({len(params['features'])} features)")
+
+    # Sanity check: the exported parameters must reproduce the real model.
+    # This catches the case where models/classical/*.joblib was overwritten by
+    # a test run (200-sample smoke model) before the export happened.
+    x_path = ROOT / "data" / "processed" / "X_tab_test.npy"
+    y_path = ROOT / "data" / "processed" / "y_tab_test.npy"
+    if not (x_path.exists() and y_path.exists()):
+        print("Note: no processed test split found; skipping accuracy check.")
+        return
+
+    X = np.load(x_path)
+    y = np.load(y_path)
+    logits = X @ np.array(params["coef"]).T + np.array(params["intercept"])
+    accuracy = float((logits.argmax(axis=1) == y).mean())
+    print(f"Held-out accuracy from exported params: {accuracy:.4f}")
+
+    if accuracy < 0.95:
+        print(
+            "WARNING: accuracy is far below the expected ~0.97 — models/ may have "
+            "been overwritten by a test run. Retrain with:\n"
+            "  python3 run_pipeline.py --classical-only --skip-generate\n"
+            "then re-run this script.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
 
 
 if __name__ == "__main__":

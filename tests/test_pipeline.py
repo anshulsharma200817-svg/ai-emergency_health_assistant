@@ -292,7 +292,7 @@ class TestDataSplitters:
 class TestClassicalTraining:
 
     @pytest.fixture(scope="class")
-    def trained_rf(self, config, small_tabular_df):
+    def trained_rf(self, config, small_tabular_df, tmp_path_factory):
         from src.preprocessing.pipeline import PreprocessingPipeline
         from src.preprocessing.splitters import split_tabular_data
         from src.training.train_classical import ClassicalTrainer
@@ -303,7 +303,19 @@ class TestClassicalTraining:
         X_v,  y_v  = pipe.transform(val_df)
         X_t,  y_t  = pipe.transform(test_df)
 
-        trainer = ClassicalTrainer(config)
+        # Point artifacts at a temp dir: ClassicalTrainer writes to
+        # paths.models/classical and paths.experiments/results, and tests must
+        # never overwrite the real trained models or experiment metrics.
+        test_config = {
+            **config,
+            "paths": {
+                **config.get("paths", {}),
+                "models": str(tmp_path_factory.mktemp("models")),
+                "experiments": str(tmp_path_factory.mktemp("experiments")),
+            },
+        }
+
+        trainer = ClassicalTrainer(test_config)
         return trainer.train_all(X_tr, y_tr, X_v, y_v, X_t, y_t)
 
     def test_all_models_present(self, trained_rf):

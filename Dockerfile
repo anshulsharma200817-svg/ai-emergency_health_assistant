@@ -25,7 +25,7 @@ RUN mkdir -p data/raw data/interim data/processed \
 # Default entrypoint runs the full pipeline:
 #   1. Generate all synthetic data  (100K tabular + 20K temporal + 20K signals)
 #   2. Train all classical ML models (KNN, LR, DT, RF)
-#   3. Run the full 45-test suite
+#   3. Run the full 54-test suite
 CMD ["bash", "-c", "\
   echo '' && \
   echo '============================================================' && \
@@ -39,8 +39,8 @@ CMD ["bash", "-c", "\
   echo '[2/3] Training classical ML models...' && \
   python3 run_pipeline.py --classical-only --skip-generate && \
   echo '' && \
-  echo '[3/3] Running test suite...' && \
-  python3 -m pytest tests/test_pipeline.py -v --tb=short && \
+  echo '[3/3] Running the 54-test suite...' && \
+  python3 -m pytest tests -q --tb=short && \
   echo '' && \
   echo '============================================================' && \
   echo '  PIPELINE COMPLETE — All artifacts saved to /app/models/' && \
