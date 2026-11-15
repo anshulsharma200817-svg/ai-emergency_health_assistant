@@ -155,6 +155,50 @@ def check_body(name, raw, expect):
         print(f"    ok  {name:40s} -> {status}")
 
 
+def check_constraint(name, payload):
+    """`unconsciousness = 1` must never resolve to NORMAL or MODERATE."""
+    global passes
+    status, body = post(payload)
+    problems: list[str] = []
+    if status != 200:
+        problems.append(f"status {status}: {str(body)[:160]}")
+    else:
+        cls = body.get("predicted_risk_class")
+        probs = body.get("probabilities") or {}
+        if cls not in {"HIGH", "CRITICAL"}:
+            problems.append(f"class {cls} on unconsciousness=1")
+        if probs.get("NORMAL") != 0:
+            problems.append(f"NORMAL probability {probs.get('NORMAL')}")
+        if probs.get("MODERATE") != 0:
+            problems.append(f"MODERATE probability {probs.get('MODERATE')}")
+        if abs(sum(probs.values()) - 1.0) > 5e-4:
+            problems.append(f"probabilities sum to {sum(probs.values())}")
+        if body.get("applied_constraint") != "unconsciousness":
+            problems.append(f"applied_constraint {body.get('applied_constraint')!r}")
+        if abs(body.get("confidence", -1) - max(probs.values())) > 2e-4:
+            problems.append("confidence != max probability")
+    if problems:
+        fail(name, problems)
+    else:
+        passes += 1
+        print(f"    ok  {name:40s} -> {body.get('predicted_risk_class')}")
+
+
+def check_constraint_free(name, payload):
+    """Payloads without the flag must report `applied_constraint: null`."""
+    global passes
+    status, body = post(payload)
+    if status != 200:
+        fail(name, [f"status {status}: {str(body)[:160]}"])
+    elif body.get("applied_constraint") is not None:
+        fail(name, [f"applied_constraint {body.get('applied_constraint')!r}"])
+    elif "applied_constraint" not in body:
+        fail(name, ["applied_constraint field missing"])
+    else:
+        passes += 1
+        print(f"    ok  {name:40s} -> {body.get('predicted_risk_class')}")
+
+
 def main() -> int:
     global BASE, SUPPORT, passes
     parser = argparse.ArgumentParser(description=__doc__)
@@ -352,6 +396,26 @@ def main() -> int:
         payload["diastolic_bp"] = dbp
         check(f"{name} ({sbp}/{dbp})", payload, expect,
               ["diastolic_bp"] if expect == 400 else None)
+
+    # ── 5c. Data-derived red-flag constraint ─────────────────────────────────
+    print("[5c] unconsciousness constraint")
+    for name, patch in [
+        ("healthy vitals + unconsciousness", {"unconsciousness": 1}),
+        ("unconsciousness as string \"1\"", {"unconsciousness": "1"}),
+        ("unconsciousness as boolean true", {"unconsciousness": True}),
+        ("all five symptoms", {flag: 1 for flag in FLAGS}),
+        ("critical vitals + unconsciousness",
+         dict(age=67, heart_rate=142, systolic_bp=72, diastolic_bp=44, spo2=84,
+              temperature=39.4, respiratory_rate=34, unconsciousness=1)),
+        ("minimum vitals + unconsciousness",
+         dict(age=0, heart_rate=20, systolic_bp=40, diastolic_bp=20, spo2=50,
+              temperature=25.0, respiratory_rate=4, unconsciousness=1)),
+    ]:
+        payload = dict(DEFAULT)
+        payload.update(patch)
+        check_constraint(name, payload)
+
+    check_constraint_free("default vitals carry no constraint", dict(DEFAULT))
 
     # ── 6. Determinism + concurrency ─────────────────────────────────────────
     print("[6] determinism and concurrency")

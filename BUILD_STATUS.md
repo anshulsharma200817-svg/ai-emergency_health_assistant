@@ -8,7 +8,7 @@
 > diagnosis, treatment recommendations, ambulance dispatch, hospital
 > integration, real sensor acquisition, GPS, or clinical decision-making.
 
-- **Stage**: Feature complete · models trained · 66/66 tests passing · deployed on Vercel
+- **Stage**: Feature complete · models trained · 69/69 tests passing · deployed on Vercel
 - **Pipeline**: Data generation → validation → preprocessing → training →
   evaluation → inference → alert routing
 - **Dataset**: 100,000 tabular + 20,000 temporal + 20,000 signal synthetic records
@@ -16,7 +16,7 @@
   trained; Random Forest best at 98.05% test accuracy
 - **Deep models**: Physio1DCNN, PhysioRNN (GRU), PhysioLSTM **trained** on the
   full 20K datasets; best is 1D CNN at 99.73% test accuracy
-- **Tests**: 66/66 passing (`pytest tests`)
+- **Tests**: 69/69 passing (`pytest tests`)
 - **Web demo**: Next.js 16 in `web/`, model inference in TypeScript
 - **Deployment**: Vercel (Root Directory = `web`, no env vars required)
 
@@ -37,7 +37,7 @@
 | Explainability | ✅ | Feature importances, LR coefficients, optional SHAP |
 | Inference + alert engine | ✅ | Risk prediction + P0–P3 simulated priority routing |
 | Docker pipeline | ✅ | `docker compose up --build` generates, trains, tests |
-| Automated tests | ✅ | 66 passed (57 integration + 9 unit) |
+| Automated tests | ✅ | 69 passed (60 integration + 9 unit) |
 | Web demo | ✅ | `web/` Next.js app with live prediction form |
 | Serverless inference | ✅ | `web/app/api/predict` — dependency-free TypeScript model |
 | Metrics API | ✅ | `web/app/api/metrics` |
@@ -80,7 +80,7 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
    15,000 held-out rows (0 label differences, max probability Δ 1.27e-6), and 600 raw
    records (150 per class) sent to `/api/predict` matched the Python pipeline with
    **0 label mismatches**, 0 rejections and max probability difference **5e-5**.
-4. `pytest tests -q` — 66 passed.
+4. `pytest tests -q` — 69 passed.
 5. Live Vercel deployment checked with headless Chrome: page and all `_next`
    assets 200, hydration clean (0 console errors, 0 failed requests), presets and
    prediction button work, no horizontal overflow at 390 px.
@@ -154,10 +154,17 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
   config crashed. These now exit 1/2 with an actionable message. A data-quality gate
   aborts training on an invalid schema, duplicates, nulls or out-of-range values
   (`--allow-data-issues` overrides).
+- **Symptoms could make a patient look healthier.** The displayed model gave
+  `unconsciousness` a positive NORMAL coefficient (a degenerate optimum: the flag
+  occurs in 0 of 50,000 low-risk training rows), so healthy vitals + unconscious
+  returned `NORMAL 100%` and all five symptoms returned `NORMAL 99.9%`. The serving
+  layer now masks NORMAL/MODERATE whenever that flag is set, renormalizes over
+  HIGH/CRITICAL, and reports `applied_constraint`. The mask changes 0 of 15,000 test
+  predictions, so 97.03% is untouched.
 - **Alerting failed open.** `generate_alert` mapped an unknown or missing risk class to
   P3 `NORMAL`; it now raises `ValueError`, so a label bug cannot report the
   least-urgent tier.
-- **Verification after the fixes.** 153-check API edge sweep passes (every field at
+- **Verification after the fixes.** 160-check API edge sweep passes (every field at
   min−1/min/max/max+1, type confusion, Fahrenheit, malformed bodies, CORS, 48-way
   concurrency, warning boundaries); exported parameters match scikit-learn on all
   15,000 held-out rows; 600 live HTTP records match with 0 label differences; a full

@@ -404,6 +404,33 @@ Four classes × 22 weights = 88 multiplications plus 4 intercepts. This is the e
 
 The max-subtraction is a numerical-stability measure and does not change the result.
 
+### Step 7b — Apply the red-flag constraint
+
+One feature encodes a symptom that the linear model cannot separate safely:
+`unconsciousness`. In the 100,000-record training set it appears in **35.1 % of
+CRITICAL** and **4.9 % of HIGH** records — and in **zero** NORMAL or MODERATE
+records. Maximum-likelihood logistic regression therefore has no finite optimum for
+that coefficient (quasi-complete separation); the fitted weight lands at
+**+0.557 on NORMAL**, so *healthy vitals + unconscious* produced `NORMAL 100 %`, and
+ticking all five symptoms *raised* NORMAL confidence to 99.9 %.
+
+The serving layer restores the constraint the data actually encodes: when
+`unconsciousness = 1`, the probabilities of NORMAL and MODERATE are set to zero and
+the remaining mass is renormalized over HIGH and CRITICAL. When the model put less
+than 0.1 % mass on both allowed classes it is extrapolating, and the empirical
+`P(class | unconsciousness = 1)` split is used instead (**HIGH 12.3 % / CRITICAL
+87.7 %**, from the held-out counts 160 / 1,330). The response reports
+`applied_constraint: "unconsciousness"` so the rule is visible rather than silent,
+and the UI prints a note under "Scored for".
+
+This is a data-derived invariant, not a tuned threshold: on the full 15,000-row test
+set 1,490 records have `unconsciousness = 1`, and the unconstrained model already
+predicted HIGH or CRITICAL for **all** of them — the mask changes **0 predictions**
+and leaves accuracy at exactly **0.9703**. The identical rule is implemented in
+`applyDataConstraints` (`web/lib/inference.ts`) and `apply_data_constraints`
+(`src/inference/predictor.py`), and both paths are covered by the API sweep and the
+Python suite.
+
 ### Step 8 — Decide and map to an alert
 
 `predicted = argmax(P)` → class label → priority `P0–P3`, alert colour, and the
@@ -552,7 +579,18 @@ returned `MODERATE` at 99.2% confidence with `CRITICAL` at 0.0%. Both values are
 the training support, so the confident answer was an artefact of extrapolation, not
 evidence.
 
-### 10.3 Error shape
+### 10.3 Red-flag invariant
+
+The constraint described in Step 7b is a serving rule, not a validation rule, so it
+never rejects a request. A record with `unconsciousness = 1` is always scored, but
+its result is confined to HIGH or CRITICAL and the response sets
+`applied_constraint: "unconsciousness"`. `unconsciousness = 0` (or an omitted flag)
+returns `applied_constraint: null`. The rule is exercised at healthy, critical,
+minimum, all-symptom and coerced (`"1"`, `true`) inputs by
+`scripts/api_edge_check.py`, and in both single-record and batch paths by
+`tests/test_pipeline.py`.
+
+### 10.4 Error shape
 
 ```json
 {
@@ -618,9 +656,13 @@ curl -X POST https://your-app.vercel.app/api/predict \
   "alert_color": "#ef4444",
   "disclaimer": "EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE",
   "distribution_warning": null,
-  "outside_training_range": []
+  "outside_training_range": [],
+  "applied_constraint": null
 }
 ```
+
+`applied_constraint` names a data-derived rule that reshaped the probabilities
+(currently only `"unconsciousness"`, see §7 Step 7b), or `null` when no rule applied.
 
 `distribution_warning` is a sentence and `outside_training_range` is a list of
 `{field, value, observed_min, observed_max}` when the input leaves the training support
@@ -686,18 +728,21 @@ and compared with `LogisticRegression.predict` / `predict_proba`:
 | Label differences | **0** |
 | Maximum probability difference | **1.27 × 10⁻⁶** |
 
-**B. Full HTTP chain.** 600 raw records from `data/raw/tabular_raw.csv` (150 per class)
-were posted to `/api/predict` and compared with the Python
-`PreprocessingPipeline` + `LogisticRegression`:
+**B. Full HTTP chain.** 600 raw held-out records from `data/raw/tabular_raw.csv`
+(120 of them with `unconsciousness = 1`, so the constraint path is included) were
+posted to `/api/predict` and compared with the Python `PreprocessingPipeline` +
+`LogisticRegression` + `apply_data_constraints`:
 
 | Check | Result |
 |---|---|
 | Records compared | 600 (0 rejected) |
 | Label mismatches | **0** |
-| Maximum probability difference | **5 × 10⁻⁵** |
+| Maximum probability difference | **0** (both sides round to 4 dp) |
+| `applied_constraint` mismatches | **0** |
 
 Together these cover normalization, the strict coercion layer, feature engineering,
-imputation, scaling, coefficients and softmax — not just the coefficients.
+imputation, scaling, coefficients, softmax and the red-flag constraint — not just the
+coefficients.
 
 ### 12.2 Deployed-parameter integrity
 
@@ -764,10 +809,10 @@ Retraining reproduces the published metrics exactly, which is how the 95.86 / 97
 
 ---
 
-## 14. Test strategy — 66/66 passing
+## 14. Test strategy — 69/69 passing
 
 ```bash
-pytest tests -q      # 66 passed in ~2.5 s
+pytest tests -q      # 69 passed in ~2.5 s
 ```
 
 | Suite | Tests | Coverage |
@@ -779,7 +824,7 @@ pytest tests -q      # 66 passed in ~2.5 s
 | `TestPreprocessingPipeline` | 6 | fit/transform, NaN-free output, leakage guard, save/load |
 | `TestDataSplitters` | 3 | sizes, no `case_id` overlap, no temporal leakage |
 | `TestClassicalTraining` | 3 | all four models present, metrics in [0,1], better than random |
-| `TestInferencePredictor` | 4 | result keys, valid class, probabilities sum to 1, batch mode |
+| `TestInferencePredictor` | 7 | result keys, valid class, probabilities sum to 1, batch mode, unconsciousness constraint (single + batch), no constraint without the flag |
 | `TestAlertEngine` | 11 | P0–P3 mapping, disclaimer, unknown/missing class raises |
 | `TestDataValidator` | 4 | schema, report structure, duplicates, range violations |
 | `TestDataQualityGate` | 6 | clean data passes; schema/duplicates/nulls/ranges abort; override |
@@ -789,10 +834,10 @@ Tests are **hermetic with respect to artifacts**: model training inside tests wr
 a temporary directory, never to `models/` or `experiments/`.
 
 `scripts/api_edge_check.py` complements the unit suite with an end-to-end sweep of a
-running server (153 checks): every numeric field at min−1 / min / max / max+1 and far
+running server (160 checks): every numeric field at min−1 / min / max / max+1 and far
 outside, type confusion, Fahrenheit variants, malformed bodies, CORS, cross-field blood
-pressure, the extrapolation-warning boundaries, determinism under 48-way concurrency,
-and the metrics endpoint. It reads the generated support table, so it cannot drift from
+pressure, the extrapolation-warning boundaries, the unconsciousness red-flag constraint,
+determinism under 48-way concurrency, and the metrics endpoint. It reads the generated support table, so it cannot drift from
 the app:
 
 ```bash

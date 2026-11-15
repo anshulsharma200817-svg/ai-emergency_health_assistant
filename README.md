@@ -46,7 +46,7 @@ reviewer can audit line by line.
 | 5 | Strong tabular accuracy | ≥ 95% macro F1 | ✅ 98.05% (RF), 97.03% (LR) |
 | 6 | Strong signal accuracy | ≥ 99% | ✅ 99.73% (1D CNN) |
 | 7 | Reproducibility | Deterministic reruns | ✅ Seed 42; retraining reproduced every metric |
-| 8 | Test coverage | 100% passing | ✅ 66/66 |
+| 8 | Test coverage | 100% passing | ✅ 69/69 |
 | 9 | Deployable without Python | Zero runtime ML dependencies | ✅ 4.4 KB frozen parameters + TypeScript |
 | 10 | Exact serving parity | No drift from Python | ✅ 15,000 held-out rows: 0 label diffs; 600 live HTTP records: 0 mismatches |
 | 11 | Safety guardrails | Reject implausible input | ✅ Range validation, explicit units, disclaimers |
@@ -183,7 +183,7 @@ two minutes and is documented end-to-end in
 - **7 models trained**: 4 classical, 3 deep — every metric published
 - **99.73%** test accuracy on ECG-like signal classification (1D CNN)
 - **98.05%** test accuracy and **0.9805** macro F1 on tabular triage (Random Forest)
-- **66/66 tests passing**, isolated from production artifacts
+- **69/69 tests passing**, isolated from production artifacts
 - **0 parity mismatches** between Python training and TypeScript serving
 - **4.4 KB** served model — no Python, pickle, ONNX or PyTorch at runtime
 - **A real bug found and fixed during verification**: the deployed model had been
@@ -191,9 +191,15 @@ two minutes and is documented end-to-end in
   input produced confident critical readings, and the result panel could display a
   verdict next to inputs that were never scored. All are now guarded against and
   documented.
-- **105-check API edge sweep**: every numeric field at min−1/min/max/max+1, type
+- **160-check API edge sweep**: every numeric field at min−1/min/max/max+1, type
   confusion, Fahrenheit variants, malformed bodies, CORS, determinism under 48-way
-  concurrency, and the warning boundaries — all passing.
+  concurrency, the warning boundaries, and the unconsciousness red-flag constraint —
+  all passing.
+- **A red-flag invariant the model cannot break**: `unconsciousness` never appears in
+  NORMAL or MODERATE in the training data, yet the logistic regression had learned a
+  *positive* NORMAL weight for it, so ticking all five symptoms returned `NORMAL
+  99.9%`. The serving layer now confines that record to HIGH/CRITICAL; it changes
+  **0 of 15,000** test predictions, so accuracy stays exactly 97.03%.
 - **Every claim is reproducible**: seed 42, fixed splits, regeneration and retraining
   reproduce the published numbers exactly.
 
@@ -219,7 +225,7 @@ python3 run_pipeline.py --classical-only --skip-generate
 python3 -m pytest tests -q
 ```
 
-To sweep the HTTP API end-to-end (153 checks) against a running server:
+To sweep the HTTP API end-to-end (160 checks) against a running server:
 
 ```bash
 python3 scripts/api_edge_check.py --base http://localhost:3000

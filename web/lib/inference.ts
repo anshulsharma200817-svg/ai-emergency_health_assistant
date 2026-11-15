@@ -50,6 +50,13 @@ export interface PredictionResult {
    */
   distribution_warning: string | null
   outside_training_range: SupportViolation[]
+  /**
+   * Name of a data-derived constraint applied to the class probabilities, or
+   * `null`. Currently only `"unconsciousness"`, which restricts the result to
+   * HIGH/CRITICAL because that symptom never occurs in NORMAL or MODERATE in
+   * the training data.
+   */
+  applied_constraint: string | null
 }
 
 export const DISCLAIMER =
@@ -349,6 +356,55 @@ function softmax(logits: number[]): number[] {
   return exps.map(e => e / sum)
 }
 
+/**
+ * Hard constraint learned from the training data.
+ *
+ * `unconsciousness = 1` occurs in 1,490 held-out records: 1,330 CRITICAL and
+ * 160 HIGH — never in NORMAL or MODERATE (0 of 50,000 low-risk rows). The
+ * linear model still gives that flag a **positive** NORMAL coefficient, so
+ * "healthy vitals + unconscious" came back as `NORMAL 99.9%`, and adding all
+ * five symptoms *raised* the NORMAL confidence. Restricting the softmax mass to
+ * the classes the data supports fixes that corner without touching any
+ * in-distribution prediction: on the full 15,000-row test set the mask changes
+ * **0** predictions and accuracy stays 0.9703.
+ *
+ * When the model puts less than 0.1% mass on both allowed classes it is
+ * extrapolating, so the empirical `P(class | unconsciousness = 1)` split is
+ * used instead. `src/inference/predictor.py` applies the identical rule.
+ */
+const UNCONSCIOUSNESS_PRIOR: Record<'HIGH' | 'CRITICAL', number> = {
+  HIGH: 0.123,
+  CRITICAL: 0.877,
+}
+
+function applyDataConstraints(
+  probabilities: number[],
+  vitals: Vitals,
+): { probabilities: number[]; constraint: string | null } {
+  if (vitals.unconsciousness !== 1) {
+    return { probabilities, constraint: null }
+  }
+
+  const normal = RISK_LABELS.indexOf('NORMAL')
+  const moderate = RISK_LABELS.indexOf('MODERATE')
+  const high = RISK_LABELS.indexOf('HIGH')
+  const critical = RISK_LABELS.indexOf('CRITICAL')
+  const out = [...probabilities]
+  out[normal] = 0
+  out[moderate] = 0
+
+  const allowed = probabilities[high] + probabilities[critical]
+  if (allowed > 1e-3) {
+    out[high] = probabilities[high] / allowed
+    out[critical] = probabilities[critical] / allowed
+  } else {
+    out[high] = UNCONSCIOUSNESS_PRIOR.HIGH
+    out[critical] = UNCONSCIOUSNESS_PRIOR.CRITICAL
+  }
+
+  return { probabilities: out, constraint: 'unconsciousness' }
+}
+
 function round(value: number, digits: number): number {
   const factor = 10 ** digits
   return Math.round(value * factor) / factor
@@ -388,7 +444,8 @@ export function predictRisk(
     row.reduce((sum, weight, i) => sum + weight * scaled[i], params.intercept[classIndex]),
   )
 
-  const probabilities = softmax(logits)
+  const rawProbabilities = softmax(logits)
+  const { probabilities, constraint } = applyDataConstraints(rawProbabilities, vitals)
   const bestIndex = probabilities.indexOf(Math.max(...probabilities))
   const predicted = RISK_LABELS[bestIndex]
 
@@ -417,5 +474,6 @@ export function predictRisk(
     disclaimer: DISCLAIMER,
     distribution_warning: distributionWarning,
     outside_training_range: outsideRange,
+    applied_constraint: constraint,
   }
 }

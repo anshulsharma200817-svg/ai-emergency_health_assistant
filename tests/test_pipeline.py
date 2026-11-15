@@ -381,6 +381,43 @@ class TestInferencePredictor:
         for r in results:
             assert "predicted_risk_class" in r
 
+    def test_unconsciousness_constraint_single(self, predictor, small_tabular_df):
+        """`unconsciousness = 1` must never resolve to NORMAL or MODERATE.
+
+        That flag never appears in the low-risk classes of the training data, so
+        the serving layer restricts the output distribution to HIGH/CRITICAL.
+        """
+        normal = small_tabular_df[small_tabular_df["risk_class"] == "NORMAL"]
+        record = (normal if len(normal) else small_tabular_df).iloc[0].to_dict()
+        record["unconsciousness"] = 1
+
+        result = predictor.predict_record(record)
+
+        assert result["applied_constraint"] == "unconsciousness"
+        assert result["predicted_risk_class"] in {"HIGH", "CRITICAL"}
+        assert result["probabilities"]["NORMAL"] == 0
+        assert result["probabilities"]["MODERATE"] == 0
+        assert abs(sum(result["probabilities"].values()) - 1.0) < 0.01
+        assert abs(result["confidence"] - max(result["probabilities"].values())) < 0.001
+
+    def test_unconsciousness_constraint_batch(self, predictor, small_tabular_df):
+        records = small_tabular_df.head(5).to_dict(orient="records")
+        for record in records:
+            record["unconsciousness"] = 1
+        results = predictor.predict_batch(records)
+        assert len(results) == 5
+        for r in results:
+            assert r["applied_constraint"] == "unconsciousness"
+            assert r["predicted_risk_class"] in {"HIGH", "CRITICAL"}
+            assert r["probabilities"]["NORMAL"] == 0
+            assert r["probabilities"]["MODERATE"] == 0
+
+    def test_no_constraint_without_flag(self, predictor, small_tabular_df):
+        record = small_tabular_df.iloc[0].to_dict()
+        record["unconsciousness"] = 0
+        result = predictor.predict_record(record)
+        assert result["applied_constraint"] is None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. Alert Engine Tests

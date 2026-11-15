@@ -29,6 +29,7 @@ interface PredictionResult {
   alert_color: string
   disclaimer: string
   distribution_warning?: string | null
+  applied_constraint?: string | null
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -65,8 +66,18 @@ const NUMERIC_FIELDS = [
   'spo2', 'temperature', 'respiratory_rate',
 ] as const
 
-const resultFieldLabel = (values: Vitals) =>
-  [
+const SYMPTOM_LABELS: Array<[keyof Vitals, string]> = [
+  ['chest_pain', 'chest pain'],
+  ['breathing_difficulty', 'breathing difficulty'],
+  ['dizziness', 'dizziness'],
+  ['unconsciousness', 'unconscious'],
+  ['bleeding_injury', 'bleeding/injury'],
+]
+
+const resultFieldLabel = (values: Vitals) => {
+  const symptoms = SYMPTOM_LABELS.filter(([field]) => values[field] === 1)
+    .map(([, label]) => label)
+  return [
     `age ${values.age}`,
     `HR ${values.heart_rate}`,
     `BP ${values.systolic_bp}/${values.diastolic_bp}`,
@@ -74,7 +85,9 @@ const resultFieldLabel = (values: Vitals) =>
     `temp ${values.temperature} °C`,
     `RR ${values.respiratory_rate}`,
     values.sex === 1 ? 'male' : 'female',
+    symptoms.length ? `symptoms: ${symptoms.join(', ')}` : 'no symptoms',
   ].join(' · ')
+}
 
 const CRITICAL_PRESET: Vitals = {
   age: 67, sex: 1, heart_rate: 142, systolic_bp: 72, diastolic_bp: 44,
@@ -509,6 +522,12 @@ export default function Home() {
                         <div style={{ marginTop: 10, fontSize: 11, color: 'var(--muted2)', lineHeight: 1.5 }}>
                           Scored for: {resultFieldLabel(prediction.scoredVitals)}
                         </div>
+                        {result.applied_constraint && (
+                          <div style={{ marginTop: 8, fontSize: 11, color: '#fbbf24', lineHeight: 1.5 }}>
+                            Red-flag constraint: {result.applied_constraint} never appears in NORMAL or
+                            MODERATE in the training data, so the result is restricted to HIGH/CRITICAL.
+                          </div>
+                        )}
                       </div>
                     </div>
 
