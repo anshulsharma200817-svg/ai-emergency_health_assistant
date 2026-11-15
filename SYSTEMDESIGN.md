@@ -421,7 +421,8 @@ than 0.1 % mass on both allowed classes it is extrapolating, and the empirical
 `P(class | unconsciousness = 1)` split is used instead (**HIGH 12.3 % / CRITICAL
 87.7 %**, from the held-out counts 160 / 1,330). The response reports
 `applied_constraint: "unconsciousness"` so the rule is visible rather than silent,
-and the UI prints a note under "Scored for".
+and the UI prints a note under "Scored for" that also discloses when the empirical
+split is being shown.
 
 This is a data-derived invariant, not a tuned threshold: on the full 15,000-row test
 set 1,490 records have `unconsciousness = 1`, and the unconstrained model already

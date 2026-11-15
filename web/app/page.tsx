@@ -526,6 +526,8 @@ export default function Home() {
                           <div style={{ marginTop: 8, fontSize: 11, color: '#fbbf24', lineHeight: 1.5 }}>
                             Red-flag constraint: {result.applied_constraint} never appears in NORMAL or
                             MODERATE in the training data, so the result is restricted to HIGH/CRITICAL.
+                            When the model assigns those no mass, the empirical split for this symptom
+                            (HIGH 12.3% / CRITICAL 87.7%) is shown instead.
                           </div>
                         )}
                       </div>
