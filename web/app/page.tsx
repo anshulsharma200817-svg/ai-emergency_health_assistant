@@ -268,7 +268,7 @@ export default function Home() {
           {[
             { num: '100K', label: 'Synthetic Records' },
             { num: '97.0%', label: 'Served Model Accuracy' },
-            { num: '66/66', label: 'Tests Passing' },
+            { num: '69/69', label: 'Tests Passing' },
             { num: '4', label: 'Risk Classes' },
           ].map(s => (
             <div className="stat-cell" key={s.label}>
@@ -622,7 +622,7 @@ export default function Home() {
               { icon: '🔬', title: 'Feature Engineering', desc: '13 vitals + 9 derived = 22 features: pulse pressure, MAP, shock index, clinical severity flags, ordinal encodings.' },
               { icon: '🛡️', title: 'No Data Leakage', desc: 'Stratified 70/15/15 splits, pipeline fitted on train only, ID-based temporal splits prevent sequence leakage.' },
               { icon: '🤖', title: '7 ML/DL Models', desc: 'KNN, Logistic Regression, Decision Tree, Random Forest (classical), plus trained 1D CNN, GRU, and LSTM (PyTorch).' },
-              { icon: '📊', title: '66/66 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
+              { icon: '📊', title: '69/69 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
               { icon: '🐳', title: 'Docker Ready', desc: 'Single docker compose up command generates data, trains models, and runs the full test suite.' },
             ].map(f => (
               <div className="card" key={f.title}>
