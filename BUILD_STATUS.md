@@ -8,7 +8,7 @@
 > diagnosis, treatment recommendations, ambulance dispatch, hospital
 > integration, real sensor acquisition, GPS, or clinical decision-making.
 
-- **Stage**: Feature complete · models trained · 54/54 tests passing · deployed on Vercel
+- **Stage**: Feature complete · models trained · 66/66 tests passing · deployed on Vercel
 - **Pipeline**: Data generation → validation → preprocessing → training →
   evaluation → inference → alert routing
 - **Dataset**: 100,000 tabular + 20,000 temporal + 20,000 signal synthetic records
@@ -16,7 +16,7 @@
   trained; Random Forest best at 98.05% test accuracy
 - **Deep models**: Physio1DCNN, PhysioRNN (GRU), PhysioLSTM **trained** on the
   full 20K datasets; best is 1D CNN at 99.73% test accuracy
-- **Tests**: 54/54 passing (`pytest tests`)
+- **Tests**: 66/66 passing (`pytest tests`)
 - **Web demo**: Next.js 16 in `web/`, model inference in TypeScript
 - **Deployment**: Vercel (Root Directory = `web`, no env vars required)
 
@@ -37,7 +37,7 @@
 | Explainability | ✅ | Feature importances, LR coefficients, optional SHAP |
 | Inference + alert engine | ✅ | Risk prediction + P0–P3 simulated priority routing |
 | Docker pipeline | ✅ | `docker compose up --build` generates, trains, tests |
-| Automated tests | ✅ | 54 passed (45 integration + 9 unit) |
+| Automated tests | ✅ | 66 passed (57 integration + 9 unit) |
 | Web demo | ✅ | `web/` Next.js app with live prediction form |
 | Serverless inference | ✅ | `web/app/api/predict` — dependency-free TypeScript model |
 | Metrics API | ✅ | `web/app/api/metrics` |
@@ -76,12 +76,11 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
 1. `cd web && npm run build` — production build succeeds; `/` static,
    `/api/predict` and `/api/metrics` dynamic functions.
 2. Started the production server and called both API routes — valid JSON.
-3. **Parity check**: sent 300 records drawn from the 100K dataset (75 per class)
-   to `/api/predict` and compared against the Python `PreprocessingPipeline` +
-   `LogisticRegression`:
-   - **0 label mismatches**, 0 rejections
-   - **max probability difference 0.000000**
-4. `pytest tests -q` — 54 passed.
+3. **Parity check, two layers**: the exported JSON reproduced scikit-learn on all
+   15,000 held-out rows (0 label differences, max probability Δ 1.27e-6), and 600 raw
+   records (150 per class) sent to `/api/predict` matched the Python pipeline with
+   **0 label mismatches**, 0 rejections and max probability difference **5e-5**.
+4. `pytest tests -q` — 66 passed.
 5. Live Vercel deployment checked with headless Chrome: page and all `_next`
    assets 200, hydration clean (0 console errors, 0 failed requests), presets and
    prediction button work, no horizontal overflow at 390 px.
@@ -99,7 +98,7 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
   - retraining classical models on the full dataset (reproduces 95.86 / 97.03 /
     96.61 / 98.05 exactly) and re-exporting the JSON (verified 0.9703);
   - adding an accuracy guard to `scripts/export_web_model_params.py` that fails
-    if the exported params score below 0.95 on the held-out split.
+    if the exported params score below 0.965 on a held-out split of at least 8,000 rows.
 - **No input validation.** Out-of-range vitals (e.g. `temperature: 98.6` in °F,
   `spo2: 150`) were silently scored and returned `CRITICAL` at 100% confidence.
   `web/lib/inference.ts` now validates every field against physiological ranges
@@ -120,11 +119,50 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
   - aligning the form's `min`/`max` with the API (it previously rejected valid
     values such as age 0 or 115 and temperature 27 °C).
 - **Silent extrapolation.** Accepted ranges are wider than the training data
-  (trained on ages 18–89, temperatures 30.5–44.5 °C). A 100-year-old at 45 °C
+  (trained on ages 18–89, temperatures 30.5–44.49 °C). A 100-year-old at 45 °C
   therefore returned `MODERATE` at 99.2% with `CRITICAL` at 0.0% — a confident
   answer built on extrapolation. Responses now include
   `distribution_warning` and `outside_training_range`, surfaced as an amber
   banner above the probability bars.
+- **Malformed input silently became a healthy default.** `{"heart_rate": "abc"}`,
+  `"80abc"`, `"0x50"` (parsed as hex 80), arrays, objects, `"NaN"`, `"Infinity"`,
+  `1e309`, `sex: 0.5`, `sex: true` and dropped symptom booleans were all replaced by
+  healthy-adult defaults, so a typo produced `NORMAL` at 98.8%. Rewritten as a strict
+  coercion layer: absent values get a default, present-but-unparseable values get
+  `400`. Booleans are accepted for symptom flags only, and `sex` is strictly `0`/`1`.
+- **Symptom toggles were mouse-only and double-fired.** `display: none` removed the
+  checkboxes from the tab order, and a label `onClick` plus the forwarded input click
+  cancelled each other. They are now real focusable checkboxes with `onChange` and a
+  `:focus-within` outline: Space toggles, a label click toggles exactly once.
+- **Double submit and late responses.** Three rapid Enters could fire two requests, and
+  editing during a request let the late response repopulate the panel. A synchronous
+  in-flight ref limits it to one request, and a `latestVitals` ref discards a response
+  if the form changed mid-flight.
+- **Inverted blood pressure accepted.** `diastolic > systolic` is now rejected (400)
+  by the API and inline in the form; equality is accepted because 15 training rows
+  round to it (System design §3.1).
+- **The export guard wrote before verifying.** A 400-sample smoke model scoring 0.9549
+  passed the old 0.95 threshold and overwrote the committed parameters. The check now
+  runs **before** any write, requires 0.965 accuracy and ≥8,000 held-out rows
+  (`--allow-small` overrides), and writes atomically. Both refusal paths were tested
+  and left `model-params.json` byte-identical.
+- **The extrapolation table was hand-copied and wrong.** `training-support.json` is now
+  generated from the raw training CSV by the export script; the real maximum
+  temperature is 44.49 °C, not 44.5 °C.
+- **Pipeline CLI failed silently.** `--skip-generate` generated 83 MB when data was
+  missing, `--classical-only --deep-only` were not mutually exclusive, and a missing
+  config crashed. These now exit 1/2 with an actionable message. A data-quality gate
+  aborts training on an invalid schema, duplicates, nulls or out-of-range values
+  (`--allow-data-issues` overrides).
+- **Alerting failed open.** `generate_alert` mapped an unknown or missing risk class to
+  P3 `NORMAL`; it now raises `ValueError`, so a label bug cannot report the
+  least-urgent tier.
+- **Verification after the fixes.** 153-check API edge sweep passes (every field at
+  min−1/min/max/max+1, type confusion, Fahrenheit, malformed bodies, CORS, 48-way
+  concurrency, warning boundaries); exported parameters match scikit-learn on all
+  15,000 held-out rows; 600 live HTTP records match with 0 label differences; a full
+  classical retrain reproduces every metric and every joblib checksum exactly in ~49 s;
+  and all three deep checkpoints reload to their published accuracies.
 
 ---
 

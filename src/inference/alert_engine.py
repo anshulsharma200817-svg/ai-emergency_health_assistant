@@ -38,8 +38,17 @@ class SimulatedAlertEngine:
         Returns:
             Dict containing simulated alert payload, priority level, and educational message.
         """
-        risk_class = prediction_result.get("predicted_risk_class", "NORMAL")
+        risk_class = prediction_result.get("predicted_risk_class")
         case_id = prediction_result.get("case_id", "UNKNOWN")
+
+        # Fail closed: an unrecognised class must never fall through to the
+        # least-urgent tier. A missing or misspelled label is a bug upstream,
+        # and silently reporting "normal" is the worst possible default.
+        if risk_class not in ("CRITICAL", "HIGH", "MODERATE", "NORMAL"):
+            raise ValueError(
+                f"Unknown risk class {risk_class!r}; expected one of "
+                "CRITICAL, HIGH, MODERATE, NORMAL"
+            )
 
         if risk_class == "CRITICAL":
             priority = "P0"

@@ -87,7 +87,7 @@ models/classical/logistic_regression.joblib ─┤
                                    ▼
                  scripts/export_web_model_params.py
                  (writes JSON, scores it on the held-out split,
-                  exits non-zero below 0.95)
+                  exits non-zero below 0.965)
                                    ▼
                       web/lib/model-params.json   ≈ 4.4 KB
                       imputer medians · scaler mean/scale

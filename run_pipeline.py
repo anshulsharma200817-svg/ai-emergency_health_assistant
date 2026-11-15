@@ -57,11 +57,16 @@ def ensure_dirs(config: dict) -> None:
 # Data loading helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_or_generate_tabular(config: dict, quick: bool) -> pd.DataFrame:
+def load_or_generate_tabular(config: dict, quick: bool, skip_generate: bool = False) -> pd.DataFrame:
     raw_path = os.path.join(config["paths"]["data_raw"], "tabular_raw.csv")
     if os.path.exists(raw_path):
         logger.info(f"Loading existing tabular data from {raw_path}")
         return pd.read_csv(raw_path)
+    if skip_generate:
+        raise FileNotFoundError(
+            f"--skip-generate was given but {raw_path} does not exist. "
+            "Run `python3 generate_data.py` first, or omit --skip-generate."
+        )
     logger.info("Tabular data not found — generating...")
     gen = TabularDataGenerator(config)
     n = 250 if quick else None
@@ -70,7 +75,7 @@ def load_or_generate_tabular(config: dict, quick: bool) -> pd.DataFrame:
     return df
 
 
-def load_or_generate_temporal(config: dict, quick: bool):
+def load_or_generate_temporal(config: dict, quick: bool, skip_generate: bool = False):
     raw_dir = config["paths"]["data_raw"]
     X_path   = os.path.join(raw_dir, "temporal_X.npy")
     y_path   = os.path.join(raw_dir, "temporal_y.npy")
@@ -79,6 +84,11 @@ def load_or_generate_temporal(config: dict, quick: bool):
     if os.path.exists(X_path):
         logger.info(f"Loading existing temporal data from {raw_dir}/temporal_*.npy")
         return (np.load(X_path), np.load(y_path), np.load(ids_path))
+    if skip_generate:
+        raise FileNotFoundError(
+            f"--skip-generate was given but {X_path} does not exist. "
+            "Run `python3 generate_data.py` first, or omit --skip-generate."
+        )
     logger.info("Temporal data not found — generating...")
     gen = TemporalDataGenerator(config)
     n = 400 if quick else None
@@ -89,7 +99,7 @@ def load_or_generate_temporal(config: dict, quick: bool):
     return X, y, ids
 
 
-def load_or_generate_signals(config: dict, quick: bool):
+def load_or_generate_signals(config: dict, quick: bool, skip_generate: bool = False):
     raw_dir = config["paths"]["data_raw"]
     X_path  = os.path.join(raw_dir, "signal_X.npy")
     y_path  = os.path.join(raw_dir, "signal_y.npy")
@@ -97,6 +107,11 @@ def load_or_generate_signals(config: dict, quick: bool):
     if os.path.exists(X_path):
         logger.info(f"Loading existing signal data from {raw_dir}/signal_*.npy")
         return np.load(X_path), np.load(y_path)
+    if skip_generate:
+        raise FileNotFoundError(
+            f"--skip-generate was given but {X_path} does not exist. "
+            "Run `python3 generate_data.py` first, or omit --skip-generate."
+        )
     logger.info("Signal data not found — generating...")
     gen = SignalDataGenerator(config)
     n = 400 if quick else None
@@ -110,16 +125,74 @@ def load_or_generate_signals(config: dict, quick: bool):
 # Main pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+def enforce_data_quality(report: dict, allow_issues: bool = False) -> None:
+    """Abort on data problems that would silently corrupt every metric.
+
+    The validator already computes these counts, but the pipeline used to log
+    them and carry on — so a corrupt file produced a confidently wrong model.
+    Duplicates matter in particular: they can straddle the train/test split and
+    inflate held-out accuracy.
+    """
+    problems: list[str] = []
+
+    if not report.get("schema_valid"):
+        problems.append(f"schema invalid: {report.get('schema_errors')}")
+
+    duplicates = int(report.get("duplicate_count", 0) or 0)
+    if duplicates:
+        problems.append(
+            f"{duplicates:,} duplicate rows (duplicates can cross the train/test "
+            "split and inflate held-out accuracy)"
+        )
+
+    missing = {k: v for k, v in (report.get("missing_values") or {}).items() if v}
+    if missing:
+        problems.append(f"missing values: {missing}")
+
+    out_of_bounds = {
+        k: v.get("out_of_bounds_count", 0)
+        for k, v in (report.get("range_validation") or {}).items()
+        if v.get("out_of_bounds_count")
+    }
+    if out_of_bounds:
+        problems.append(f"values outside the configured ranges: {out_of_bounds}")
+
+    if not problems:
+        logger.info("  Data quality gate passed (schema, duplicates, nulls, ranges)")
+        return
+
+    for problem in problems:
+        logger.error(f"  DATA CHECK FAILED: {problem}")
+
+    if allow_issues:
+        logger.warning("  --allow-data-issues given: continuing with invalid data — results will be unreliable.")
+        return
+
+    logger.error(
+        "Refusing to train on invalid data. Fix the source file, or pass "
+        "--allow-data-issues to override."
+    )
+    sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Full training pipeline")
     parser.add_argument("--quick",           action="store_true", help="Quick smoke test")
-    parser.add_argument("--classical-only",  action="store_true", help="Skip deep learning")
-    parser.add_argument("--deep-only",       action="store_true", help="Skip classical ML")
-    parser.add_argument("--skip-generate",   action="store_true", help="Skip data generation, use existing files")
+    only = parser.add_mutually_exclusive_group()
+    only.add_argument("--classical-only",  action="store_true", help="Skip deep learning")
+    only.add_argument("--deep-only",       action="store_true", help="Skip classical ML")
+    parser.add_argument("--skip-generate",   action="store_true", help="Use existing data/raw files; fail if missing")
+    parser.add_argument("--allow-data-issues", action="store_true",
+                        help="Continue even when the data quality gate fails (unreliable results)")
     parser.add_argument("--config",          default="config.yaml", help="Path to config file")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError:
+        parser.error(f"config file not found: {args.config}")
+    except Exception as exc:  # malformed YAML, permissions, …
+        parser.error(f"could not read config {args.config}: {exc}")
     ensure_dirs(config)
 
     # Patch epoch count for quick mode
@@ -137,9 +210,13 @@ def main() -> None:
 
     # ── STEP 1: Load / Generate Data ──────────────────────────────────
     logger.info("\n[STEP 1] Loading / Generating Datasets...")
-    df_tabular                = load_or_generate_tabular(config, args.quick)
-    X_temporal, y_temporal, ids_temporal = load_or_generate_temporal(config, args.quick)
-    X_signal,   y_signal                  = load_or_generate_signals(config, args.quick)
+    try:
+        df_tabular                = load_or_generate_tabular(config, args.quick, args.skip_generate)
+        X_temporal, y_temporal, ids_temporal = load_or_generate_temporal(config, args.quick, args.skip_generate)
+        X_signal,   y_signal                  = load_or_generate_signals(config, args.quick, args.skip_generate)
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
+        sys.exit(1)
 
     # ── STEP 2: Validate Tabular Data ─────────────────────────────────
     logger.info("\n[STEP 2] Validating Tabular Data...")
@@ -147,6 +224,7 @@ def main() -> None:
     report = validator.generate_quality_report(df_tabular)
     logger.info(f"  Records : {report['num_records']:,}  |  Schema valid: {report['schema_valid']}")
     logger.info(f"  Classes : {report['class_distribution']}")
+    enforce_data_quality(report, allow_issues=args.allow_data_issues)
 
     # ── STEP 3: Split Tabular Data ────────────────────────────────────
     logger.info("\n[STEP 3] Splitting Datasets...")

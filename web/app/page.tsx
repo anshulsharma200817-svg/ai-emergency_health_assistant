@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { VITALS_RANGES, vitalErrorMessage, type VitalsField } from '@/lib/ranges'
+import { useRef, useState } from 'react'
+import { VITALS_RANGES, crossFieldError, vitalErrorMessage, type VitalsField } from '@/lib/ranges'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -99,6 +99,11 @@ export default function Home() {
     scoredVitals: Vitals
   } | null>(null)
   const [loading, setLoading] = useState(false)
+  /** Synchronous in-flight guard: `loading` state can lag behind a second Enter keypress. */
+  const inFlight = useRef(false)
+  /** Latest vitals, so a response can be discarded if the form changed mid-flight. */
+  const latestVitals = useRef(vitals)
+  latestVitals.current = vitals
   const [error, setError]   = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof Vitals, string>>>({})
@@ -111,12 +116,22 @@ export default function Home() {
 
   const handleChange = (field: keyof Vitals, raw: string) => {
     const value = raw.trim() === '' ? Number.NaN : Number(raw)
-    setVitals(prev => ({ ...prev, [field]: value }))
+    const nextVitals = { ...vitals, [field]: value }
+    setVitals(nextVitals)
     setFieldErrors(prev => {
       const next = { ...prev }
       const msg = vitalErrorMessage(field as VitalsField, value)
       if (msg) next[field] = msg
       else delete next[field]
+
+      // Keep the cross-field blood-pressure error current while typing, not
+      // only on submit: either pressure can invalidate the pair.
+      const cross = crossFieldError(nextVitals)
+      const diastolicOwn = vitalErrorMessage('diastolic_bp', nextVitals.diastolic_bp)
+      if (diastolicOwn) next.diastolic_bp = diastolicOwn
+      else if (cross) next.diastolic_bp = cross.message
+      else delete next.diastolic_bp
+
       return next
     })
     if (prediction) clearPrediction('Vitals changed — run the prediction again to score these values.')
@@ -139,11 +154,16 @@ export default function Home() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (inFlight.current) return
 
     const errors: Partial<Record<keyof Vitals, string>> = {}
     for (const field of NUMERIC_FIELDS) {
       const msg = vitalErrorMessage(field, vitals[field])
       if (msg) errors[field] = msg
+    }
+    const crossField = crossFieldError(vitals)
+    if (crossField && !errors[crossField.field]) {
+      errors[crossField.field] = crossField.message
     }
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors)
@@ -154,6 +174,7 @@ export default function Home() {
     }
 
     setLoading(true)
+    inFlight.current = true
     setError(null)
     setNotice(null)
     setPrediction(null)
@@ -173,11 +194,18 @@ export default function Home() {
         setError(issues || data?.error || `API error: ${res.status}`)
         return
       }
-      setPrediction({ result: data, scoredVitals: submitted })
+      const changed = JSON.stringify(latestVitals.current) !== JSON.stringify(submitted)
+      if (changed) {
+        setPrediction(null)
+        setNotice('Vitals changed — run the prediction again to score these values.')
+      } else {
+        setPrediction({ result: data, scoredVitals: submitted })
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       setError(`Prediction failed: ${msg}. Please try again.`)
     } finally {
+      inFlight.current = false
       setLoading(false)
     }
   }
@@ -227,7 +255,7 @@ export default function Home() {
           {[
             { num: '100K', label: 'Synthetic Records' },
             { num: '97.0%', label: 'Served Model Accuracy' },
-            { num: '54/54', label: 'Tests Passing' },
+            { num: '66/66', label: 'Tests Passing' },
             { num: '4', label: 'Risk Classes' },
           ].map(s => (
             <div className="stat-cell" key={s.label}>
@@ -414,9 +442,13 @@ export default function Home() {
                       <label
                         key={field}
                         className={`symptom-toggle ${vitals[field as keyof Vitals] ? 'active' : ''}`}
-                        onClick={() => toggleSymptom(field as keyof Vitals)}
                       >
-                        <input type="checkbox" checked={!!vitals[field as keyof Vitals]} readOnly />
+                        <input
+                          type="checkbox"
+                          name={field}
+                          checked={!!vitals[field as keyof Vitals]}
+                          onChange={() => toggleSymptom(field as keyof Vitals)}
+                        />
                         <div className="symptom-dot" />
                         {label}
                       </label>
@@ -571,7 +603,7 @@ export default function Home() {
               { icon: '🔬', title: 'Feature Engineering', desc: '13 vitals + 9 derived = 22 features: pulse pressure, MAP, shock index, clinical severity flags, ordinal encodings.' },
               { icon: '🛡️', title: 'No Data Leakage', desc: 'Stratified 70/15/15 splits, pipeline fitted on train only, ID-based temporal splits prevent sequence leakage.' },
               { icon: '🤖', title: '7 ML/DL Models', desc: 'KNN, Logistic Regression, Decision Tree, Random Forest (classical), plus trained 1D CNN, GRU, and LSTM (PyTorch).' },
-              { icon: '📊', title: '54/54 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
+              { icon: '📊', title: '66/66 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
               { icon: '🐳', title: 'Docker Ready', desc: 'Single docker compose up command generates data, trains models, and runs the full test suite.' },
             ].map(f => (
               <div className="card" key={f.title}>

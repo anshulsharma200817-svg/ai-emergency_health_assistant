@@ -1,0 +1,30 @@
+{
+  "age": {
+    "min": 18.0,
+    "max": 89.0
+  },
+  "heart_rate": {
+    "min": 25.0,
+    "max": 240.0
+  },
+  "systolic_bp": {
+    "min": 45.0,
+    "max": 254.7
+  },
+  "diastolic_bp": {
+    "min": 25.0,
+    "max": 155.0
+  },
+  "spo2": {
+    "min": 55.0,
+    "max": 100.0
+  },
+  "temperature": {
+    "min": 30.5,
+    "max": 44.49
+  },
+  "respiratory_rate": {
+    "min": 5.0,
+    "max": 58.0
+  }
+}

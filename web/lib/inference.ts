@@ -11,7 +11,12 @@
  */
 
 import params from './model-params.json'
-import { VITALS_RANGES, outsideTrainingSupport, type SupportViolation } from './ranges'
+import {
+  VITALS_RANGES,
+  crossFieldError,
+  outsideTrainingSupport,
+  type SupportViolation,
+} from './ranges'
 
 export type RiskClass = 'NORMAL' | 'MODERATE' | 'HIGH' | 'CRITICAL'
 export type AlertPriority = 'P0' | 'P1' | 'P2' | 'P3'
@@ -122,27 +127,112 @@ export class VitalsValidationError extends Error {
 }
 
 /**
- * Coerce the incoming payload into a complete, finite vitals record.
- * Missing/invalid fields fall back to {@link DEFAULT_VITALS}.
+ * Strict decimal parser. Accepts `72`, `"72"`, `" 72 "`, `"37.5"`, `"1e2"`.
+ * Rejects everything else — including `"80abc"`, `"0x50"`, `"Infinity"`,
+ * `"NaN"`, arrays, objects and booleans. `Number()` alone is too permissive:
+ * `Number("0x50")` is 80 and `Number("80abc")` is NaN, both of which used to
+ * fall through to a healthy default.
+ */
+const DECIMAL_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
+
+function toFiniteNumber(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
+  if (typeof raw !== 'string') return null
+  const text = raw.trim()
+  if (!DECIMAL_RE.test(text)) return null
+  const value = Number(text)
+  return Number.isFinite(value) ? value : null
+}
+
+/** Symptom flags accept 0/1 and booleans; JSON clients commonly send `true`. */
+function toFlag(raw: unknown): number | null {
+  if (raw === true) return 1
+  if (raw === false) return 0
+  if (raw === 0 || raw === 1) return raw
+  if (raw === '0' || raw === '1') return Number(raw)
+  return null
+}
+
+/** Sex is strictly binary: 0 or 1 (numeric or string, no booleans, no 0.5). */
+function toSex(raw: unknown): number | null {
+  if (raw === 0 || raw === 1) return raw
+  if (raw === '0' || raw === '1') return Number(raw)
+  return null
+}
+
+function describe(raw: unknown): string {
+  if (typeof raw === 'string') return JSON.stringify(raw)
+  if (raw === undefined) return 'undefined'
+  try {
+    return JSON.stringify(raw) ?? String(raw)
+  } catch {
+    return String(raw)
+  }
+}
+
+/**
+ * Coerce the incoming payload into a complete vitals record.
  *
- * `temperature_unit: "F"` (or `"fahrenheit"`) converts the supplied
+ * Three outcomes per field:
+ *  - **absent** (`undefined`, `null`, `""`) → healthy-adult default;
+ *  - **present and coercible** → used as given, then range-checked;
+ *  - **present but malformed** → a `VitalsIssue`, which the route turns into
+ *    HTTP 400. It is never silently replaced by a default, because that would
+ *    turn `{"heart_rate": "abc"}` into a confident `NORMAL`.
+ *
+ * `temperature_unit: "F"` (or `"fahrenheit"`, `"°f"`) converts the supplied
  * temperature to Celsius before inference.
  */
-export function normalizeVitals(
+export function coerceVitals(
   input: Partial<Vitals> | Record<string, unknown> = {},
-): Vitals {
-  const out = { ...DEFAULT_VITALS }
+): { vitals: Vitals; issues: VitalsIssue[] } {
+  const out: Vitals = { ...DEFAULT_VITALS }
+  const issues: VitalsIssue[] = []
   const source = input as Record<string, unknown>
   let temperatureSupplied = false
 
   for (const field of NUMERIC_FIELDS) {
     const raw = source[field]
     if (raw === undefined || raw === null || raw === '') continue
-    const value = typeof raw === 'string' ? Number(raw) : raw
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      out[field] = value
-      if (field === 'temperature') temperatureSupplied = true
+
+    if ((FLAG_FIELDS as readonly string[]).includes(field)) {
+      const flag = toFlag(raw)
+      if (flag === null) {
+        issues.push({
+          field, value: Number.NaN, min: 0, max: 1,
+          message: `${field} must be 0, 1, true or false (received ${describe(raw)})`,
+        })
+      } else {
+        out[field] = flag
+      }
+      continue
     }
+
+    if (field === 'sex') {
+      const sex = toSex(raw)
+      if (sex === null) {
+        issues.push({
+          field, value: Number.NaN, min: 0, max: 1,
+          message: `sex must be 0 (female) or 1 (male) (received ${describe(raw)})`,
+        })
+      } else {
+        out[field] = sex
+      }
+      continue
+    }
+
+    const value = toFiniteNumber(raw)
+    if (value === null) {
+      const { min, max } = VITALS_RANGES[field]
+      issues.push({
+        field, value: Number.NaN, min, max,
+        message: `${field} must be a finite number (received ${describe(raw)})`,
+      })
+      continue
+    }
+
+    out[field] = value
+    if (field === 'temperature') temperatureSupplied = true
   }
 
   const unit = String(
@@ -153,7 +243,19 @@ export function normalizeVitals(
     out.temperature = ((out.temperature - 32) * 5) / 9
   }
 
-  return out
+  return { vitals: out, issues }
+}
+
+/**
+ * Coerce and validate in one step. Throws {@link VitalsValidationError} when
+ * the payload contains malformed or out-of-range values.
+ */
+export function normalizeVitals(
+  input: Partial<Vitals> | Record<string, unknown> = {},
+): Vitals {
+  const { vitals, issues } = coerceVitals(input)
+  if (issues.length > 0) throw new VitalsValidationError(issues)
+  return vitals
 }
 
 /**
@@ -186,6 +288,17 @@ export function validateVitals(vitals: Vitals): VitalsIssue[] {
       min: 0,
       max: 1,
       message: `${flag} must be 0 or 1 (received ${value})`,
+    })
+  }
+
+  const crossField = crossFieldError(vitals)
+  if (crossField) {
+    issues.push({
+      field: crossField.field,
+      value: vitals[crossField.field],
+      min: VITALS_RANGES[crossField.field].min,
+      max: vitals.systolic_bp,
+      message: crossField.message,
     })
   }
 
@@ -249,9 +362,9 @@ function round(value: number, digits: number): number {
 export function predictRisk(
   input: Partial<Vitals> | Record<string, unknown> = {},
 ): PredictionResult {
-  const vitals = normalizeVitals(input)
+  const { vitals, issues: coercionIssues } = coerceVitals(input)
 
-  const issues = validateVitals(vitals)
+  const issues = [...coercionIssues, ...validateVitals(vitals)]
   if (issues.length > 0) {
     throw new VitalsValidationError(issues)
   }

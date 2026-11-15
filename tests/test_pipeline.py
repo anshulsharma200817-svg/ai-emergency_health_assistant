@@ -410,6 +410,17 @@ class TestAlertEngine:
         assert "disclaimer" in alert
         assert "EDUCATIONAL" in alert["disclaimer"].upper()
 
+    @pytest.mark.parametrize("bogus", ["BOGUS", "", "critical", "Normal", None])
+    def test_unknown_class_fails_closed(self, engine, bogus):
+        """An unrecognised class must raise, never silently become P3/NORMAL."""
+        pred = {"case_id": "TEST_001", "predicted_risk_class": bogus, "probabilities": {}}
+        with pytest.raises(ValueError):
+            engine.generate_alert(pred)
+
+    def test_missing_class_fails_closed(self, engine):
+        with pytest.raises(ValueError):
+            engine.generate_alert({"case_id": "TEST_001", "probabilities": {}})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. Data Validator Tests
@@ -445,3 +456,46 @@ class TestDataValidator:
             assert info["out_of_bounds_count"] == 0, (
                 f"Feature '{feature}' has {info['out_of_bounds_count']} out-of-bounds values"
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. Pipeline data-quality gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDataQualityGate:
+    """The pipeline must refuse to train on data the validator rejects."""
+
+    @staticmethod
+    def _report(**overrides):
+        report = {
+            "schema_valid": True,
+            "schema_errors": [],
+            "duplicate_count": 0,
+            "missing_values": {"age": 0, "heart_rate": 0},
+            "range_validation": {
+                "age": {"out_of_bounds_count": 0},
+                "heart_rate": {"out_of_bounds_count": 0},
+            },
+        }
+        report.update(overrides)
+        return report
+
+    def test_clean_report_passes(self):
+        from run_pipeline import enforce_data_quality
+        enforce_data_quality(self._report())  # must not raise
+
+    @pytest.mark.parametrize("overrides", [
+        {"schema_valid": False, "schema_errors": ["missing column: spo2"]},
+        {"duplicate_count": 3},
+        {"missing_values": {"age": 2, "heart_rate": 0}},
+        {"range_validation": {"age": {"out_of_bounds_count": 1}}},
+    ])
+    def test_invalid_data_exits(self, overrides):
+        from run_pipeline import enforce_data_quality
+        with pytest.raises(SystemExit) as exc:
+            enforce_data_quality(self._report(**overrides))
+        assert exc.value.code == 1
+
+    def test_override_continues(self):
+        from run_pipeline import enforce_data_quality
+        enforce_data_quality(self._report(duplicate_count=5), allow_issues=True)

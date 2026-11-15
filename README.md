@@ -46,9 +46,9 @@ reviewer can audit line by line.
 | 5 | Strong tabular accuracy | ≥ 95% macro F1 | ✅ 98.05% (RF), 97.03% (LR) |
 | 6 | Strong signal accuracy | ≥ 99% | ✅ 99.73% (1D CNN) |
 | 7 | Reproducibility | Deterministic reruns | ✅ Seed 42; retraining reproduced every metric |
-| 8 | Test coverage | 100% passing | ✅ 54/54 |
+| 8 | Test coverage | 100% passing | ✅ 66/66 |
 | 9 | Deployable without Python | Zero runtime ML dependencies | ✅ 4.4 KB frozen parameters + TypeScript |
-| 10 | Exact serving parity | No drift from Python | ✅ 300 records, 0 mismatches, Δ 0.000000 |
+| 10 | Exact serving parity | No drift from Python | ✅ 15,000 held-out rows: 0 label diffs; 600 live HTTP records: 0 mismatches |
 | 11 | Safety guardrails | Reject implausible input | ✅ Range validation, explicit units, disclaimers |
 | 12 | Honest documentation | Decisions and limits written down | ✅ README + SYSTEMDESIGN + BUILD_STATUS |
 
@@ -131,22 +131,41 @@ explained in [`SYSTEMDESIGN.md` §9](SYSTEMDESIGN.md#9-model-selection-for-servi
 
 ### 3.6 Hardened and verified it
 
-- **Parity test:** 300 records (75 per class) scored by both Python and the deployed
-  TypeScript API — **0 label mismatches, maximum probability difference 0.000000**.
+- **Parity test, two layers:** the exported parameters reproduce scikit-learn on all
+  **15,000** held-out rows (0 label differences, maximum probability difference
+  `1.27 × 10⁻⁶`), and **600 raw records** sent through the deployed HTTP API matched
+  the Python pipeline with 0 label mismatches and a maximum probability difference of
+  `5 × 10⁻⁵`.
 - **Input validation:** every vital is range-checked server-side; out-of-range input
-  returns `400` with a per-field reason. Fahrenheit is accepted explicitly via
-  `temperature_unit: "F"` instead of being silently misread. The form validates against
-  the same table, so what the browser allows and what the API accepts cannot diverge.
+  returns `400` with a per-field reason. Malformed values (`"abc"`, `"80abc"`, `"0x50"`,
+  `"NaN"`, arrays, objects) are **rejected**, not quietly replaced by a healthy default —
+  that was the most dangerous failure mode found, because a typo previously produced a
+  confident `NORMAL` at 98.8%. Symptom flags accept `0/1`, `"0"/"1"` and booleans;
+  `sex` is strictly `0`/`1`; and a strictly inverted blood pressure
+  (`diastolic > systolic`) is refused. Fahrenheit is accepted explicitly via
+  `temperature_unit: "F"`. The form validates against the same table and the same
+  cross-field rule, so what the browser allows and what the API accepts cannot diverge.
 - **No stale verdicts:** a displayed result is stamped with the values it was scored for
   and is discarded the moment any input changes — the panel can never show a confident
   answer beside vitals it never saw.
 - **Extrapolation is labelled:** accepted ranges are wider than the training data (ages
-  18–89, temperatures 30.5–44.5 °C), so inputs outside that support still score but come
+  18–89, temperatures 30.5–44.49 °C), so inputs outside that support still score but come
   back with `distribution_warning` and an amber banner instead of being presented as
-  ordinary results.
-- **Test isolation:** a test run previously overwrote the production joblibs with
-  200-sample models. Tests now write to a temp directory, and the export script refuses
-  to publish parameters scoring below 0.95 on the held-out split.
+  ordinary results. The support bounds are **generated** from the training CSV by the
+  export script rather than hand-copied, which is how the true temperature maximum was
+  found to be 44.49 °C, not 44.5 °C.
+- **Test isolation and export guard:** a test run previously overwrote the production
+  joblibs with 200-sample models. Tests now write to a temp directory, and the export
+  script verifies **before** writing: it refuses to publish parameters below **0.965**
+  accuracy or from a held-out split smaller than **8,000** rows, leaving the committed
+  JSON byte-identical. Both failure paths were tested for real (`--allow-small` is the
+  explicit override).
+- **Pipeline fails fast:** `run_pipeline.py` now aborts on an invalid schema, duplicate
+  rows, missing values or out-of-range vitals instead of logging them and training
+  anyway; `--skip-generate` errors cleanly when data is absent instead of silently
+  generating 83 MB. A full classical retrain reproduces every metric exactly in ~49 s.
+- **Alerting fails closed:** an unrecognised or missing risk class raises instead of
+  defaulting to P3 "normal", so a label bug can never report the least-urgent tier.
 - **Live checks:** page, all assets, both APIs, CORS preflight, hydration and mobile
   layout verified with headless Chrome.
 
@@ -164,7 +183,7 @@ two minutes and is documented end-to-end in
 - **7 models trained**: 4 classical, 3 deep — every metric published
 - **99.73%** test accuracy on ECG-like signal classification (1D CNN)
 - **98.05%** test accuracy and **0.9805** macro F1 on tabular triage (Random Forest)
-- **54/54 tests passing**, isolated from production artifacts
+- **66/66 tests passing**, isolated from production artifacts
 - **0 parity mismatches** between Python training and TypeScript serving
 - **4.4 KB** served model — no Python, pickle, ONNX or PyTorch at runtime
 - **A real bug found and fixed during verification**: the deployed model had been
@@ -172,8 +191,11 @@ two minutes and is documented end-to-end in
   input produced confident critical readings, and the result panel could display a
   verdict next to inputs that were never scored. All are now guarded against and
   documented.
-- **Every claim is reproducible**: seed 42, fixed splits, and a retrain that reproduces
-  the published numbers exactly.
+- **105-check API edge sweep**: every numeric field at min−1/min/max/max+1, type
+  confusion, Fahrenheit variants, malformed bodies, CORS, determinism under 48-way
+  concurrency, and the warning boundaries — all passing.
+- **Every claim is reproducible**: seed 42, fixed splits, regeneration and retraining
+  reproduce the published numbers exactly.
 
 ---
 
@@ -195,6 +217,12 @@ pip install -r requirements.txt
 python3 generate_data.py
 python3 run_pipeline.py --classical-only --skip-generate
 python3 -m pytest tests -q
+```
+
+To sweep the HTTP API end-to-end (153 checks) against a running server:
+
+```bash
+python3 scripts/api_edge_check.py --base http://localhost:3000
 ```
 
 Deep models are optional and need PyTorch:
@@ -258,6 +286,10 @@ Full file-by-file structure, architecture, and design rationale:
   serves a tabular model because the form collects tabular vitals. The rationale is in
   `SYSTEMDESIGN.md` §9.
 - **No authentication or rate limiting** on the public demo endpoints.
+- **One data artifact:** 15 of 100,000 synthetic training rows have
+  `diastolic == systolic` because one-decimal rounding collapsed a near-equal pair.
+  The dataset is frozen so published metrics stay reproducible; the API accepts equality
+  and rejects inversion (see `SYSTEMDESIGN.md` §3.1).
 - **`backend/` and `frontend/`** in this repository are an unrelated auth demo and are
   excluded from deployment by the Vercel Root Directory setting.
 

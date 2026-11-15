@@ -170,7 +170,23 @@ Split sizes:
 The fitted pipeline (imputer + scaler) is serialized to
 `models/preprocessing_pipeline.pkl` and is what the export script reads.
 
----
+### 3.1 Data-quality gate
+
+`run_pipeline.py` treats the validator's report as a **gate, not a log line**.
+Training aborts with exit code 1 when the tabular file has an invalid schema,
+duplicate rows, any missing value, or any value outside the configured physiological
+ranges. Before this gate existed, a corrupt CSV still produced a model and a full set
+of metrics. Duplicates are fatal because they can straddle the train/test split and
+inflate held-out accuracy. `--allow-data-issues` downgrades the gate to a warning for
+deliberate experiments. On the committed 100,000-row dataset it passes with
+0 duplicates, 0 nulls and 0 out-of-range values.
+
+The generator itself contains one known rounding artifact: it enforces
+`diastolic_bp < systolic_bp` before rounding, but one-decimal rounding collapses
+15 near-equal pairs to equality, so 15 of 100,000 rows have a pulse pressure of 0.
+The dataset was frozen rather than regenerated because every published metric and the
+exported parameters are derived from it; the API accordingly rejects only a
+**strictly inverted** pair (Section 10.1).
 
 ## 4. Models
 
@@ -249,6 +265,11 @@ Implemented in `src/inference/alert_engine.py` (Python) and mirrored in
 agree. Every payload carries
 `"disclaimer": "EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE"`.
 
+The Python engine **fails closed**: `generate_alert` raises `ValueError` for any class
+it does not recognise — including a missing `predicted_risk_class` — instead of
+defaulting to P3 "normal". A misspelled or absent label is an upstream bug, and
+reporting the least-urgent tier would be the most dangerous possible default.
+
 ---
 
 ## 7. Serving architecture (Vercel)
@@ -290,7 +311,8 @@ or pickle executes on Vercel.**
 | `LogisticRegression.classes_` | `classes` | 4 integers |
 
 Total ≈ 4.4 KB, committed to git, versioned with the code. The export script refuses to
-write a model that scores below 0.95 on the held-out split (see Section 12).
+write a model that scores below 0.965 on a held-out split of at least 8,000 rows
+(see Section 12).
 
 ---
 
@@ -428,8 +450,8 @@ arithmetic. Consequences:
 
 | Model | Test Acc | Served? | Reason |
 |---|---|---|---|
-| **Logistic Regression** | 97.03% | ✅ | 1.3 KB joblib → 4.4 KB JSON, ~40 lines of arithmetic, exact parity |
-| Random Forest | 98.05% | ❌ | 200 trees, **795,402 nodes**, 73 MB joblib → ≈32 MB compact JSON plus a traversal evaluator |
+| **Logistic Regression** | 97.03% | ✅ | 1.2 KB joblib → 4.4 KB JSON, ~40 lines of arithmetic, exact parity |
+| Random Forest | 98.05% | ❌ | 200 trees, **795,402 nodes**, 76 MB joblib → ≈32 MB compact JSON plus a traversal evaluator |
 | KNN | 95.86% | ❌ | 6.5 MB joblib (70,000 × 22 training vectors) and per-request distance computation |
 | Decision Tree | 96.61% | ❌ | 80 KB and portable, but less accurate than LR |
 | 1D CNN | 99.73% | ❌ | needs a PyTorch runtime and a 500-sample ECG, which the vitals form cannot produce |
@@ -488,11 +510,14 @@ modality spelled out.
 Design notes:
 
 - Bounds are derived from the generated dataset wherever possible. An earlier pass used
-  `systolic_bp ≥ 50` and rejected 1,991 genuine critical records (SBP 45–49), which is
+  `systolic_bp ≥ 50` and rejected 1,916 genuine critical records (SBP 45–49), which is
   how the lower bound was corrected.
-- A cross-field `diastolic < systolic` rule was deliberately **not** enforced: the
-  generator itself emits 15 such rows, so rejecting them would be inconsistent with the
-  training distribution.
+- A cross-field rule rejects only a **strictly inverted** blood pressure
+  (`diastolic_bp > systolic_bp`), which never occurs in the training set. Equality is
+  accepted because one-decimal rounding collapsed 15 near-equal training pairs to
+  `diastolic == systolic`; those rows are inside the model's experience, even though a
+  pulse pressure of zero is not clinically meaningful. The check is shared by the form
+  and the API (`crossFieldError` in `web/lib/ranges.ts`).
 - The **form uses the same table** (`web/lib/ranges.ts`) as the server, so the browser
   cannot silently reject a value the API would accept (an earlier version limited age to
   1–110 and temperature to 30–45 while the API allowed 0–120 and 25–45).
@@ -513,7 +538,7 @@ data the model ever saw**. The 100,000-record synthetic training set covers:
 | `systolic_bp` | 45 – 254.7 | 40 – 300 |
 | `diastolic_bp` | 25 – 155 | 20 – 200 |
 | `spo2` | 55 – 100 | 50 – 100 |
-| `temperature` | 30.5 – 44.5 | 25 – 45 |
+| `temperature` | 30.5 – 44.49 | 25 – 45 |
 | `respiratory_rate` | 5 – 58 | 4 – 80 |
 
 A record inside the accepted range but outside this support is an **extrapolation**: the
@@ -605,10 +630,10 @@ curl -X POST https://your-app.vercel.app/api/predict \
 {
   "predicted_risk_class": "MODERATE",
   "confidence": 0.9919,
-  "distribution_warning": "Outside training distribution: age=100 (trained on 18–89), temperature=45 (trained on 30.5–44.5). The score is an extrapolation, not a validated result.",
+  "distribution_warning": "Outside training distribution: age=100 (trained on 18–89), temperature=45 (trained on 30.5–44.49). The score is an extrapolation, not a validated result.",
   "outside_training_range": [
     {"field": "age", "value": 100, "observed_min": 18, "observed_max": 89},
-    {"field": "temperature", "value": 45, "observed_min": 30.5, "observed_max": 44.5}
+    {"field": "temperature", "value": 45, "observed_min": 30.5, "observed_max": 44.49}
   ]
 }
 ```
@@ -649,17 +674,30 @@ alert = SimulatedAlertEngine(config).generate_alert(result)
 
 ### 12.1 TypeScript ↔ Python parity
 
-300 records drawn from the 100K dataset (75 per class) were scored by both the Python
-`PreprocessingPipeline` + `LogisticRegression` and the deployed `/api/predict`:
+Parity is checked at two levels.
+
+**A. Exported parameters vs scikit-learn, on every held-out row.** The JSON decision
+function is applied to all **15,000** rows of `X_tab_test.npy` (already standardized)
+and compared with `LogisticRegression.predict` / `predict_proba`:
 
 | Check | Result |
 |---|---|
-| Records compared | 300 (0 rejected) |
-| Label mismatches | **0** |
-| Maximum probability difference | **0.000000** |
+| Records compared | 15,000 |
+| Label differences | **0** |
+| Maximum probability difference | **1.27 × 10⁻⁶** |
 
-This covers the whole chain — normalization, feature engineering, imputation, scaling,
-coefficients, softmax — not just the coefficients.
+**B. Full HTTP chain.** 600 raw records from `data/raw/tabular_raw.csv` (150 per class)
+were posted to `/api/predict` and compared with the Python
+`PreprocessingPipeline` + `LogisticRegression`:
+
+| Check | Result |
+|---|---|
+| Records compared | 600 (0 rejected) |
+| Label mismatches | **0** |
+| Maximum probability difference | **5 × 10⁻⁵** |
+
+Together these cover normalization, the strict coercion layer, feature engineering,
+imputation, scaling, coefficients and softmax — not just the coefficients.
 
 ### 12.2 Deployed-parameter integrity
 
@@ -670,7 +708,13 @@ export:
 Held-out accuracy from exported params: 0.9703
 ```
 
-The script exits non-zero below 0.95 and prints retraining instructions.
+The script exits non-zero below **0.965** accuracy or when the held-out split has
+fewer than **8,000** rows (which is what a `--quick` run produces), and prints
+retraining instructions. `--allow-small` overrides the row-count check. It also
+generates `web/lib/training-support.json` from the raw training CSV, so the
+extrapolation bounds are measured rather than hand-copied — that is how the true
+temperature maximum was found to be 44.49 °C, not the 44.5 °C previously written by
+hand. Both files are written atomically and only after the accuracy check passes.
 
 **Why the guard exists.** `pytest` previously constructed `ClassicalTrainer` with the
 real `config.yaml`, so each test run overwrote `models/classical/*.joblib` and
@@ -720,10 +764,10 @@ Retraining reproduces the published metrics exactly, which is how the 95.86 / 97
 
 ---
 
-## 14. Test strategy — 54/54 passing
+## 14. Test strategy — 66/66 passing
 
 ```bash
-pytest tests -q      # 54 passed in ~5 s
+pytest tests -q      # 66 passed in ~2.5 s
 ```
 
 | Suite | Tests | Coverage |
@@ -736,12 +780,24 @@ pytest tests -q      # 54 passed in ~5 s
 | `TestDataSplitters` | 3 | sizes, no `case_id` overlap, no temporal leakage |
 | `TestClassicalTraining` | 3 | all four models present, metrics in [0,1], better than random |
 | `TestInferencePredictor` | 4 | result keys, valid class, probabilities sum to 1, batch mode |
-| `TestAlertEngine` | 5 | P0–P3 mapping, disclaimer present |
+| `TestAlertEngine` | 11 | P0–P3 mapping, disclaimer, unknown/missing class raises |
 | `TestDataValidator` | 4 | schema, report structure, duplicates, range violations |
+| `TestDataQualityGate` | 6 | clean data passes; schema/duplicates/nulls/ranges abort; override |
 | Schema/config/import units | 9 | schema definitions, config parsing, module imports |
 
 Tests are **hermetic with respect to artifacts**: model training inside tests writes to
 a temporary directory, never to `models/` or `experiments/`.
+
+`scripts/api_edge_check.py` complements the unit suite with an end-to-end sweep of a
+running server (153 checks): every numeric field at min−1 / min / max / max+1 and far
+outside, type confusion, Fahrenheit variants, malformed bodies, CORS, cross-field blood
+pressure, the extrapolation-warning boundaries, determinism under 48-way concurrency,
+and the metrics endpoint. It reads the generated support table, so it cannot drift from
+the app:
+
+```bash
+python3 scripts/api_edge_check.py --base http://localhost:3000
+```
 
 ---
 
@@ -874,7 +930,7 @@ curl -s https://your-app.vercel.app/api/predict | jq '.status, .accepted_ranges'
 
 ```bash
 python3 run_pipeline.py --classical-only --skip-generate
-python3 scripts/export_web_model_params.py      # fails if accuracy < 0.95
+python3 scripts/export_web_model_params.py      # fails if accuracy < 0.965
 ```
 
 ---
@@ -889,6 +945,7 @@ python3 scripts/export_web_model_params.py      # fails if accuracy < 0.95
 | Unrelated folders | `backend/`, `frontend/` are a separate auth demo; excluded from deployment by Root Directory `web`. |
 | No auth on `/api/*` | Intentional for a public demo; add rate limiting before advertising the API. |
 | Data provenance | Fully synthetic; no real patient data is ever used or required. |
+| Zero pulse pressure | 15 / 100,000 training rows have `diastolic == systolic` from one-decimal rounding (Section 3.1); the model saw them, the API accepts equality and rejects inversion. |
 | Clinical use | Not permitted. The disclaimer is present in code, UI, and every API response. |
 
 ## 18. Design decisions worth defending
