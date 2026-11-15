@@ -1,0 +1,113 @@
+/**
+ * Single accepted-range table for patient vitals.
+ *
+ * Shared by the server route (validation) and the demo form (client-side
+ * feedback) so the two can never drift apart. A value outside these bounds is
+ * rejected instead of being fed to the model, so a typo — or a Fahrenheit
+ * temperature — can never masquerade as a confident reading.
+ *
+ * `temperature` is **Celsius**; pass `temperature_unit: "F"` to send Fahrenheit.
+ *
+ * Educational software simulation only — NOT a medical device.
+ */
+
+export interface VitalRange {
+  min: number
+  max: number
+  label: string
+  unit: string
+  step: number
+}
+
+/** Ranges keyed by vitals field. Order here is the order the form renders. */
+export const VITALS_RANGES = {
+  age:              { min: 0,  max: 120, label: 'Age',           unit: 'years',       step: 1 },
+  heart_rate:       { min: 20, max: 300, label: 'Heart Rate',    unit: 'bpm',         step: 1 },
+  systolic_bp:      { min: 40, max: 300, label: 'Systolic BP',   unit: 'mmHg',        step: 1 },
+  diastolic_bp:     { min: 20, max: 200, label: 'Diastolic BP',  unit: 'mmHg',        step: 1 },
+  spo2:             { min: 50, max: 100, label: 'SpO₂',          unit: '%',           step: 0.1 },
+  temperature:      { min: 25, max: 45,  label: 'Temperature',   unit: '°C',          step: 0.1 },
+  respiratory_rate: { min: 4,  max: 80,  label: 'Resp. Rate',    unit: 'breaths/min', step: 1 },
+  sex:              { min: 0,  max: 1,   label: 'Sex',           unit: '0 = F, 1 = M', step: 1 },
+  chest_pain:           { min: 0, max: 1, label: 'Chest Pain',           unit: '0/1', step: 1 },
+  breathing_difficulty: { min: 0, max: 1, label: 'Breathing Difficulty', unit: '0/1', step: 1 },
+  dizziness:            { min: 0, max: 1, label: 'Dizziness',            unit: '0/1', step: 1 },
+  unconsciousness:      { min: 0, max: 1, label: 'Unconsciousness',      unit: '0/1', step: 1 },
+  bleeding_injury:      { min: 0, max: 1, label: 'Bleeding / Injury',    unit: '0/1', step: 1 },
+} as const
+
+export type VitalsField = keyof typeof VITALS_RANGES
+
+/** True when `value` lies inside the accepted range for `field`. */
+export function isVitalInRange(field: VitalsField, value: number): boolean {
+  if (!Number.isFinite(value)) return false
+  const { min, max } = VITALS_RANGES[field]
+  return value >= min && value <= max
+}
+
+/**
+ * Human-readable reason a single field is unacceptable, or `null` when it is
+ * fine. Mirrors the server message so client and server never disagree.
+ */
+export function vitalErrorMessage(field: VitalsField, value: number): string | null {
+  const { min, max, label, unit } = VITALS_RANGES[field]
+
+  if (Number.isNaN(value)) return `${label} is required`
+  if (isVitalInRange(field, value)) return null
+
+  if (field === 'temperature' && value >= 90 && value <= 115) {
+    return `Temperature looks like Fahrenheit (${value}). Enter Celsius (${min}–${max} °C).`
+  }
+  if (value < min) return `${label} must be at least ${min} ${unit} (got ${value})`
+  return `${label} must be at most ${max} ${unit} (got ${value})`
+}
+
+/**
+ * Observed min/max of each vital in the 100,000-record synthetic training set.
+ *
+ * The accepted ranges above are chosen for clinical plausibility, so they are
+ * **wider** than what the model ever saw. A record inside the accepted range but
+ * outside this support is an extrapolation: the model still answers, and often
+ * with high confidence, but that confidence means nothing. Predictions outside
+ * this support therefore carry an explicit warning instead of being presented
+ * as ordinary results.
+ *
+ * Generated from `data/raw/tabular_raw.csv` (seed 42); regenerate with
+ * `scripts/export_web_model_params.py`.
+ */
+export const TRAINING_SUPPORT = {
+  age:              { min: 18,   max: 89 },
+  heart_rate:       { min: 25,   max: 240 },
+  systolic_bp:      { min: 45,   max: 254.7 },
+  diastolic_bp:     { min: 25,   max: 155 },
+  spo2:             { min: 55,   max: 100 },
+  temperature:      { min: 30.5, max: 44.5 },
+  respiratory_rate: { min: 5,    max: 58 },
+} as const
+
+export interface SupportViolation {
+  field: string
+  value: number
+  observed_min: number
+  observed_max: number
+}
+
+/** Fields whose value lies outside the range present in the training data. */
+export function outsideTrainingSupport(
+  vitals: Record<string, number>,
+): SupportViolation[] {
+  const violations: SupportViolation[] = []
+  for (const [field, support] of Object.entries(TRAINING_SUPPORT)) {
+    const value = vitals[field]
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    if (value < support.min || value > support.max) {
+      violations.push({
+        field,
+        value,
+        observed_min: support.min,
+        observed_max: support.max,
+      })
+    }
+  }
+  return violations
+}

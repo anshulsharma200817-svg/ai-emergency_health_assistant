@@ -106,6 +106,25 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
   and `/api/predict` returns `400` with per-field messages; Fahrenheit is
   accepted via `temperature_unit: "F"`. Ranges align with the real dataset
   (systolic BP down to 40 mmHg is valid, so the lower bound is 40).
+- **Stale verdict beside edited inputs.** The result panel was only cleared when
+  a preset was loaded or a new request succeeded. Typing an impossible value
+  (e.g. `temperature: 0645`) left the previous prediction — a real
+  `MODERATE · 99.2%` — on screen, so the page looked as if 645 °C had been
+  scored. Fixed by:
+  - validating each input as it is typed, using the **same** range table as the
+    server (`web/lib/ranges.ts`), with inline `role="alert"` messages;
+  - discarding the previous result on any change ("Vitals changed — run the
+    prediction again");
+  - stamping each result with the exact values it was scored for
+    (`Scored for: age 100 · HR 75 · … · temp 45 °C`);
+  - aligning the form's `min`/`max` with the API (it previously rejected valid
+    values such as age 0 or 115 and temperature 27 °C).
+- **Silent extrapolation.** Accepted ranges are wider than the training data
+  (trained on ages 18–89, temperatures 30.5–44.5 °C). A 100-year-old at 45 °C
+  therefore returned `MODERATE` at 99.2% with `CRITICAL` at 0.0% — a confident
+  answer built on extrapolation. Responses now include
+  `distribution_warning` and `outside_training_range`, surfaced as an amber
+  banner above the probability bars.
 
 ---
 

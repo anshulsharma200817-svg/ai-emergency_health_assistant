@@ -135,7 +135,15 @@ explained in [`SYSTEMDESIGN.md` §9](SYSTEMDESIGN.md#9-model-selection-for-servi
   TypeScript API — **0 label mismatches, maximum probability difference 0.000000**.
 - **Input validation:** every vital is range-checked server-side; out-of-range input
   returns `400` with a per-field reason. Fahrenheit is accepted explicitly via
-  `temperature_unit: "F"` instead of being silently misread.
+  `temperature_unit: "F"` instead of being silently misread. The form validates against
+  the same table, so what the browser allows and what the API accepts cannot diverge.
+- **No stale verdicts:** a displayed result is stamped with the values it was scored for
+  and is discarded the moment any input changes — the panel can never show a confident
+  answer beside vitals it never saw.
+- **Extrapolation is labelled:** accepted ranges are wider than the training data (ages
+  18–89, temperatures 30.5–44.5 °C), so inputs outside that support still score but come
+  back with `distribution_warning` and an amber banner instead of being presented as
+  ordinary results.
 - **Test isolation:** a test run previously overwrote the production joblibs with
   200-sample models. Tests now write to a temp directory, and the export script refuses
   to publish parameters scoring below 0.95 on the held-out split.
@@ -160,8 +168,9 @@ two minutes and is documented end-to-end in
 - **0 parity mismatches** between Python training and TypeScript serving
 - **4.4 KB** served model — no Python, pickle, ONNX or PyTorch at runtime
 - **A real bug found and fixed during verification**: the deployed model had been
-  accidentally replaced by a test artifact (92.05% instead of 97.03%), and out-of-range
-  input produced confident critical readings. Both are now guarded against and
+  accidentally replaced by a test artifact (92.05% instead of 97.03%), out-of-range
+  input produced confident critical readings, and the result panel could display a
+  verdict next to inputs that were never scored. All are now guarded against and
   documented.
 - **Every claim is reproducible**: seed 42, fixed splits, and a retrain that reproduces
   the published numbers exactly.

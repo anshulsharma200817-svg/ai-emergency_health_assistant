@@ -296,13 +296,19 @@ write a model that scores below 0.95 on the held-out split (see Section 12).
 
 ## 8. Production inference pipeline: input to output
 
-This is the exact path a request takes on the deployed system. Steps 1–8 are in
+This is the exact path a request takes on the deployed system. Steps 1–9 are in
 `web/lib/inference.ts`; the HTTP wrapper is `web/app/api/predict/route.ts`.
 
 ### Step 0 — Browser
 
 `web/app/page.tsx` holds 13 vitals in React state (number inputs for seven measured
-values, a sex selector, five symptom toggles). On submit it issues:
+values, a sex selector, five symptom toggles). Each input is validated on change against
+the same `VITALS_RANGES` table the server uses, so an impossible value is flagged
+immediately and blocks submission. Editing any vitals **discards the previous result**
+and shows "Vitals changed — run the prediction again", and a rendered result is stamped
+with the exact values it was scored for. Neither behaviour is cosmetic: without them the
+panel could display a confident verdict beside inputs it never saw. On submit the page
+issues:
 
 ```http
 POST /api/predict
@@ -380,6 +386,15 @@ The max-subtraction is a numerical-stability measure and does not change the res
 
 `predicted = argmax(P)` → class label → priority `P0–P3`, alert colour, and the
 educational disclaimer.
+
+### Step 9 — Flag extrapolation
+
+Independently of the prediction, `outsideTrainingSupport` compares the record with
+`TRAINING_SUPPORT` (the observed min/max of each vital in the 100,000-record training
+set). Values inside the accepted range but outside that support still produce a score;
+the response then carries `distribution_warning` and `outside_training_range`, and the UI
+prints an amber banner above the probability bars. Step 9 never changes the class — it
+only stops an extrapolation from being presented as an ordinary answer.
 
 ### Worked example — critical preset
 
@@ -478,10 +493,41 @@ Design notes:
 - A cross-field `diastolic < systolic` rule was deliberately **not** enforced: the
   generator itself emits 15 such rows, so rejecting them would be inconsistent with the
   training distribution.
-- Native browser `min`/`max` on the form give immediate feedback; the server check is
-  the authority because the API is public.
+- The **form uses the same table** (`web/lib/ranges.ts`) as the server, so the browser
+  cannot silently reject a value the API would accept (an earlier version limited age to
+  1–110 and temperature to 30–45 while the API allowed 0–120 and 25–45).
+- Client-side validation is advisory; the server check is the authority because the API
+  is public. The form is `noValidate` so its own messages — not a transient browser
+  bubble — explain what is wrong, and every rejected field is marked
+  `aria-invalid` with a `role="alert"` message.
 
-### 10.2 Error shape
+### 10.2 Training support and extrapolation
+
+Validation bounds are chosen for clinical plausibility, so they are **wider than the
+data the model ever saw**. The 100,000-record synthetic training set covers:
+
+| Field | Trained on | Accepted by API |
+|---|---|---|
+| `age` | 18 – 89 | 0 – 120 |
+| `heart_rate` | 25 – 240 | 20 – 300 |
+| `systolic_bp` | 45 – 254.7 | 40 – 300 |
+| `diastolic_bp` | 25 – 155 | 20 – 200 |
+| `spo2` | 55 – 100 | 50 – 100 |
+| `temperature` | 30.5 – 44.5 | 25 – 45 |
+| `respiratory_rate` | 5 – 58 | 4 – 80 |
+
+A record inside the accepted range but outside this support is an **extrapolation**: the
+model still answers, often with near-100% confidence, but that confidence is not
+meaningful. Such responses are not rejected — they are labelled. `outside_training_range`
+lists each violating field with its observed bounds, and `distribution_warning` carries a
+human-readable sentence that the UI renders as an amber banner.
+
+This was added after a live report in which `temperature 45 °C` on a 100-year-old
+returned `MODERATE` at 99.2% confidence with `CRITICAL` at 0.0%. Both values are outside
+the training support, so the confident answer was an artefact of extrapolation, not
+evidence.
+
+### 10.3 Error shape
 
 ```json
 {
@@ -502,7 +548,7 @@ Malformed JSON returns `400 {"error": "Invalid JSON body"}`; a non-object body r
 `400 {"error": "Request body must be a JSON object of vitals"}`. Unexpected failures
 return `500` with a message, never a fabricated prediction.
 
-### 10.3 Fahrenheit handling
+### 10.4 Fahrenheit handling
 
 ```bash
 curl -X POST .../api/predict -H 'Content-Type: application/json' \
@@ -545,7 +591,25 @@ curl -X POST https://your-app.vercel.app/api/predict \
   "confidence": 0.9912,
   "probabilities": {"NORMAL": 0, "MODERATE": 0, "HIGH": 0.0088, "CRITICAL": 0.9912},
   "alert_color": "#ef4444",
-  "disclaimer": "EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE"
+  "disclaimer": "EDUCATIONAL SIMULATION ONLY — NOT FOR CLINICAL USE",
+  "distribution_warning": null,
+  "outside_training_range": []
+}
+```
+
+`distribution_warning` is a sentence and `outside_training_range` is a list of
+`{field, value, observed_min, observed_max}` when the input leaves the training support
+(see §10.2). Example for a 100-year-old at 45 °C:
+
+```json
+{
+  "predicted_risk_class": "MODERATE",
+  "confidence": 0.9919,
+  "distribution_warning": "Outside training distribution: age=100 (trained on 18–89), temperature=45 (trained on 30.5–44.5). The score is an extrapolation, not a validated result.",
+  "outside_training_range": [
+    {"field": "age", "value": 100, "observed_min": 18, "observed_max": 89},
+    {"field": "temperature", "value": 45, "observed_min": 30.5, "observed_max": 44.5}
+  ]
 }
 ```
 

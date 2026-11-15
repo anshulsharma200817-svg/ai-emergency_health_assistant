@@ -11,6 +11,7 @@
  */
 
 import params from './model-params.json'
+import { VITALS_RANGES, outsideTrainingSupport, type SupportViolation } from './ranges'
 
 export type RiskClass = 'NORMAL' | 'MODERATE' | 'HIGH' | 'CRITICAL'
 export type AlertPriority = 'P0' | 'P1' | 'P2' | 'P3'
@@ -38,6 +39,12 @@ export interface PredictionResult {
   probabilities: Record<RiskClass, number>
   alert_color: string
   disclaimer: string
+  /**
+   * Set when any vital lies outside the range seen in training. The prediction
+   * is then an extrapolation and must not be read as a normal result.
+   */
+  distribution_warning: string | null
+  outside_training_range: SupportViolation[]
 }
 
 export const DISCLAIMER =
@@ -87,27 +94,13 @@ const FLAG_FIELDS = [
 ] as const
 
 /**
- * Accepted physiological range per field. Values outside these bounds are
- * rejected instead of being fed to the model, so a typo (or a Fahrenheit
- * temperature) can never masquerade as a confident critical reading.
+ * Accepted physiological range per field, re-exported from `./ranges` so the
+ * server route and the demo form share one definition.
  *
  * `temperature` is **Celsius**; pass `temperature_unit: "F"` to send Fahrenheit.
  */
-export const VITALS_RANGES: Record<keyof Vitals, { min: number; max: number }> = {
-  age: { min: 0, max: 120 },
-  sex: { min: 0, max: 1 },
-  heart_rate: { min: 20, max: 300 },
-  systolic_bp: { min: 40, max: 300 },
-  diastolic_bp: { min: 20, max: 200 },
-  spo2: { min: 50, max: 100 },
-  temperature: { min: 25, max: 45 },
-  respiratory_rate: { min: 4, max: 80 },
-  chest_pain: { min: 0, max: 1 },
-  breathing_difficulty: { min: 0, max: 1 },
-  dizziness: { min: 0, max: 1 },
-  unconsciousness: { min: 0, max: 1 },
-  bleeding_injury: { min: 0, max: 1 },
-}
+export { VITALS_RANGES } from './ranges'
+export type { VitalsField, VitalRange } from './ranges'
 
 export interface VitalsIssue {
   field: string
@@ -294,6 +287,14 @@ export function predictRisk(
     {} as Record<RiskClass, number>,
   )
 
+  const outsideRange = outsideTrainingSupport(vitals as unknown as Record<string, number>)
+  const distributionWarning =
+    outsideRange.length > 0
+      ? `Outside training distribution: ${outsideRange
+          .map(v => `${v.field}=${v.value} (trained on ${v.observed_min}–${v.observed_max})`)
+          .join(', ')}. The score is an extrapolation, not a validated result.`
+      : null
+
   return {
     predicted_risk_class: predicted,
     priority: PRIORITY_MAP[predicted],
@@ -301,5 +302,7 @@ export function predictRisk(
     probabilities: probMap,
     alert_color: ALERT_COLOR[predicted],
     disclaimer: DISCLAIMER,
+    distribution_warning: distributionWarning,
+    outside_training_range: outsideRange,
   }
 }

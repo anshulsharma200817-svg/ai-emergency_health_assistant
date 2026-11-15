@@ -113,9 +113,11 @@ Next.js serverless function (Node.js)
   ├─ 5. standardize   (x − mean) / scale
   ├─ 6. score         4 logits = W·z + b
   ├─ 7. softmax       probabilities
-  └─ 8. decide        argmax → class → priority P0–P3 → colour
+  ├─ 8. decide        argmax → class → priority P0–P3 → colour
+  └─ 9. flag          outside training support → amber warning
   ▼
-JSON response  {risk class, priority, confidence, probabilities, disclaimer}
+JSON response  {risk class, priority, confidence, probabilities,
+                distribution_warning, disclaimer}
 ```
 
 Step-by-step detail with a worked example:

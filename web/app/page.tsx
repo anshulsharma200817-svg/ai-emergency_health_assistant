@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { VITALS_RANGES, vitalErrorMessage, type VitalsField } from '@/lib/ranges'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ interface PredictionResult {
   probabilities: Record<string, number>
   alert_color: string
   disclaimer: string
+  distribution_warning?: string | null
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -57,6 +59,23 @@ const DEFAULT_VITALS: Vitals = {
   chest_pain: 0, breathing_difficulty: 0, dizziness: 0, unconsciousness: 0, bleeding_injury: 0,
 }
 
+/** Free-text numeric fields — validated on the client against the same table the API uses. */
+const NUMERIC_FIELDS = [
+  'age', 'heart_rate', 'systolic_bp', 'diastolic_bp',
+  'spo2', 'temperature', 'respiratory_rate',
+] as const
+
+const resultFieldLabel = (values: Vitals) =>
+  [
+    `age ${values.age}`,
+    `HR ${values.heart_rate}`,
+    `BP ${values.systolic_bp}/${values.diastolic_bp}`,
+    `SpO₂ ${values.spo2}%`,
+    `temp ${values.temperature} °C`,
+    `RR ${values.respiratory_rate}`,
+    values.sex === 1 ? 'male' : 'female',
+  ].join(' · ')
+
 const CRITICAL_PRESET: Vitals = {
   age: 67, sex: 1, heart_rate: 142, systolic_bp: 72, diastolic_bp: 44,
   spo2: 84, temperature: 39.4, respiratory_rate: 34,
@@ -71,35 +90,80 @@ function pct(v: number) { return `${(v * 100).toFixed(1)}%` }
 
 export default function Home() {
   const [vitals, setVitals] = useState<Vitals>(DEFAULT_VITALS)
-  const [result, setResult] = useState<PredictionResult | null>(null)
+  /**
+   * The result is stored together with the exact vitals that produced it, so the
+   * panel can never show a verdict next to different inputs.
+   */
+  const [prediction, setPrediction] = useState<{
+    result: PredictionResult
+    scoredVitals: Vitals
+  } | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError]   = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof Vitals, string>>>({})
 
-  const handleChange = (field: keyof Vitals, value: string) => {
-    setVitals(prev => ({ ...prev, [field]: Number(value) }))
+  const clearPrediction = (message: string | null) => {
+    setPrediction(null)
+    setError(null)
+    setNotice(message)
+  }
+
+  const handleChange = (field: keyof Vitals, raw: string) => {
+    const value = raw.trim() === '' ? Number.NaN : Number(raw)
+    setVitals(prev => ({ ...prev, [field]: value }))
+    setFieldErrors(prev => {
+      const next = { ...prev }
+      const msg = vitalErrorMessage(field as VitalsField, value)
+      if (msg) next[field] = msg
+      else delete next[field]
+      return next
+    })
+    if (prediction) clearPrediction('Vitals changed — run the prediction again to score these values.')
+    else setError(null)
   }
 
   const toggleSymptom = (field: keyof Vitals) => {
     setVitals(prev => ({ ...prev, [field]: prev[field] ? 0 : 1 }))
+    if (prediction) clearPrediction('Vitals changed — run the prediction again to score these values.')
+    else setError(null)
   }
 
   const loadPreset = (preset: Vitals) => {
     setVitals(preset)
-    setResult(null)
+    setFieldErrors({})
+    setPrediction(null)
     setError(null)
+    setNotice(null)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    const errors: Partial<Record<keyof Vitals, string>> = {}
+    for (const field of NUMERIC_FIELDS) {
+      const msg = vitalErrorMessage(field, vitals[field])
+      if (msg) errors[field] = msg
+    }
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      setPrediction(null)
+      setNotice(null)
+      setError(`Fix the ${Object.keys(errors).length} highlighted field${Object.keys(errors).length > 1 ? 's' : ''} before predicting.`)
+      return
+    }
+
     setLoading(true)
     setError(null)
-    setResult(null)
+    setNotice(null)
+    setPrediction(null)
+    const submitted = { ...vitals }
 
     try {
       const res = await fetch('/api/predict', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(vitals),
+        body: JSON.stringify(submitted),
       })
       const data = await res.json().catch(() => null)
       if (!res.ok) {
@@ -109,7 +173,7 @@ export default function Home() {
         setError(issues || data?.error || `API error: ${res.status}`)
         return
       }
-      setResult(data)
+      setPrediction({ result: data, scoredVitals: submitted })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       setError(`Prediction failed: ${msg}. Please try again.`)
@@ -117,6 +181,8 @@ export default function Home() {
       setLoading(false)
     }
   }
+
+  const result = prediction?.result ?? null
 
   return (
     <>
@@ -139,13 +205,13 @@ export default function Home() {
         <h1>Emergency Health<br />Risk Classification</h1>
         <p className="hero-sub">
           A production-quality synthetic data ML pipeline — 100,000 records,
-          4-class risk stratification, 98%+ accuracy. Live inference demo below.
+          4-class risk stratification, 97.03% held-out accuracy. Live inference demo below.
         </p>
         <div className="hero-buttons">
           <a href="#demo" className="btn btn-primary">🩺 Try Live Demo</a>
           <a href="#models" className="btn btn-outline">📊 View Results</a>
           <a
-            href="https://github.com/anshulsharma200817/ai-emergency_health_assistant"
+            href="https://github.com/anshulsharma200817-svg/ai-emergency_health_assistant"
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-outline"
@@ -160,7 +226,7 @@ export default function Home() {
         <div className="stats-bar">
           {[
             { num: '100K', label: 'Synthetic Records' },
-            { num: '98.1%', label: 'Best Tabular Accuracy' },
+            { num: '97.0%', label: 'Served Model Accuracy' },
             { num: '54/54', label: 'Tests Passing' },
             { num: '4', label: 'Risk Classes' },
           ].map(s => (
@@ -184,7 +250,7 @@ export default function Home() {
             {[
               { n: '01', t: 'Generate', d: '100K tabular + 20K temporal + 20K signal records with Markov dynamics' },
               { n: '02', t: 'Validate', d: '0 duplicates, 0 missing values, schema checks, physiological range checks' },
-              { n: '03', t: 'Preprocess', d: 'Feature engineering: 14 → 22 features, StandardScaler, LabelEncoder' },
+              { n: '03', t: 'Preprocess', d: 'Feature engineering: 13 vitals → 22 features, StandardScaler, LabelEncoder' },
               { n: '04', t: 'Split', d: 'Stratified 70/15/15 split with no data leakage across trajectories' },
               { n: '05', t: 'Train', d: 'KNN, Logistic Regression, Decision Tree, Random Forest with joblib persistence' },
               { n: '06', t: 'Evaluate', d: 'Accuracy, Macro F1, per-class breakdown, alert priority routing P0–P3' },
@@ -294,30 +360,36 @@ export default function Home() {
             {/* ─ Form ─ */}
             <div className="card demo-form">
               <div className="form-title">Patient Vitals</div>
-              <form onSubmit={handleSubmit}>
+              <form onSubmit={handleSubmit} noValidate>
                 <div className="form-grid">
-                  {[
-                    { field: 'age',              label: 'Age (years)',   min: 1,  max: 110, step: 1 },
-                    { field: 'heart_rate',       label: 'Heart Rate (bpm)', min: 25, max: 240, step: 1 },
-                    { field: 'systolic_bp',      label: 'Systolic BP (mmHg)', min: 40, max: 260, step: 1 },
-                    { field: 'diastolic_bp',     label: 'Diastolic BP (mmHg)', min: 30, max: 160, step: 1 },
-                    { field: 'spo2',             label: 'SpO₂ (%)', min: 50, max: 100, step: 0.1 },
-                    { field: 'temperature',      label: 'Temperature (°C)', min: 30, max: 45, step: 0.1 },
-                    { field: 'respiratory_rate', label: 'Resp. Rate (breaths/min)', min: 5, max: 60, step: 1 },
-                  ].map(({ field, label, min, max, step }) => (
-                    <div className="form-group" key={field}>
-                      <label>{label}</label>
-                      <input
-                        type="number"
-                        name={field}
-                        id={`vitals-${field}`}
-                        aria-label={label}
-                        min={min} max={max} step={step}
-                        value={vitals[field as keyof Vitals]}
-                        onChange={e => handleChange(field as keyof Vitals, e.target.value)}
-                      />
-                    </div>
-                  ))}
+                  {NUMERIC_FIELDS.map(field => {
+                    const r = VITALS_RANGES[field]
+                    const err = fieldErrors[field]
+                    return (
+                      <div className="form-group" key={field}>
+                        <label htmlFor={`vitals-${field}`}>
+                          {r.label} ({r.unit})
+                        </label>
+                        <input
+                          type="number"
+                          name={field}
+                          id={`vitals-${field}`}
+                          aria-label={`${r.label} (${r.unit})`}
+                          aria-invalid={err ? true : undefined}
+                          aria-describedby={err ? `vitals-${field}-error` : undefined}
+                          min={r.min} max={r.max} step={r.step}
+                          value={Number.isFinite(vitals[field]) ? vitals[field] : ''}
+                          onChange={e => handleChange(field, e.target.value)}
+                          style={err ? { borderColor: 'rgba(239,68,68,0.65)' } : undefined}
+                        />
+                        {err && (
+                          <div id={`vitals-${field}-error`} role="alert" style={{ fontSize: 11, color: '#f87171', marginTop: 4, lineHeight: 1.35 }}>
+                            {err}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                   <div className="form-group">
                     <label htmlFor="vitals-sex">Sex</label>
                     <select id="vitals-sex" name="sex" value={vitals.sex} onChange={e => handleChange('sex', e.target.value)}>
@@ -360,13 +432,20 @@ export default function Home() {
 
             {/* ─ Result ─ */}
             <div className="result-panel">
-              {!result && !error && (
+              {!result && !error && !notice && (
                 <div className="result-idle">
                   <div className="result-idle-icon">🏥</div>
                   <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Awaiting Input</div>
                   <div className="result-idle-text">
                     Fill in patient vitals and click<br />&quot;Predict Risk Class&quot; to see results
                   </div>
+                </div>
+              )}
+
+              {!result && notice && (
+                <div className="card" style={{ borderColor: 'rgba(245,158,11,0.4)', background: 'rgba(245,158,11,0.06)' }}>
+                  <div style={{ color: '#fbbf24', fontWeight: 700, marginBottom: 8 }}>⚙ Inputs changed</div>
+                  <div style={{ fontSize: 14, color: 'var(--muted2)' }}>{notice}</div>
                 </div>
               )}
 
@@ -377,7 +456,7 @@ export default function Home() {
                 </div>
               )}
 
-              {result && (() => {
+              {result && prediction && (() => {
                 const rk = result.predicted_risk_class
                 const cfg = RISK_CONFIG[rk]
                 return (
@@ -395,8 +474,25 @@ export default function Home() {
                             Confidence: {pct(result.confidence)}
                           </span>
                         </div>
+                        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--muted2)', lineHeight: 1.5 }}>
+                          Scored for: {resultFieldLabel(prediction.scoredVitals)}
+                        </div>
                       </div>
                     </div>
+
+                    {result.distribution_warning && (
+                      <div
+                        role="alert"
+                        style={{
+                          marginTop: 14, padding: '10px 12px', borderRadius: 8,
+                          background: 'rgba(245,158,11,0.12)',
+                          border: '1px solid rgba(245,158,11,0.45)',
+                          fontSize: 12, color: '#fbbf24', lineHeight: 1.5,
+                        }}
+                      >
+                        ⚠ <strong>Extrapolation warning.</strong> {result.distribution_warning.replace(/^Outside training distribution: /, '')}
+                      </div>
+                    )}
 
                     <div className="prob-bars">
                       <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: 'var(--muted)', marginBottom: 14 }}>
@@ -472,7 +568,7 @@ export default function Home() {
           <div className="features-grid">
             {[
               { icon: '🧬', title: 'Synthetic Data Generation', desc: 'Scenario-based Gaussian class distributions, Markov latent state trajectory dynamics, P/QRS/T ECG waveform synthesis with noise.' },
-              { icon: '🔬', title: 'Feature Engineering', desc: '14 raw vitals → 22 features. Derived: pulse pressure, MAP, shock index, clinical severity flags, ordinal encodings.' },
+              { icon: '🔬', title: 'Feature Engineering', desc: '13 vitals + 9 derived = 22 features: pulse pressure, MAP, shock index, clinical severity flags, ordinal encodings.' },
               { icon: '🛡️', title: 'No Data Leakage', desc: 'Stratified 70/15/15 splits, pipeline fitted on train only, ID-based temporal splits prevent sequence leakage.' },
               { icon: '🤖', title: '7 ML/DL Models', desc: 'KNN, Logistic Regression, Decision Tree, Random Forest (classical), plus trained 1D CNN, GRU, and LSTM (PyTorch).' },
               { icon: '📊', title: '54/54 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
@@ -501,7 +597,7 @@ export default function Home() {
               <span style={{ marginLeft: 8 }}>bash</span>
             </div>
             <pre>{`# Clone & run everything with one command
-git clone https://github.com/anshulsharma200817/ai-emergency_health_assistant
+git clone https://github.com/anshulsharma200817-svg/ai-emergency_health_assistant
 cd ai-emergency_health_assistant
 docker compose up --build
 
@@ -549,7 +645,7 @@ result = predictor.predict_record({
             <a href="#models">Model Results</a>
             <a href="#pipeline">Pipeline</a>
             <a href="#quickstart">Quick Start</a>
-            <a href="https://github.com/anshulsharma200817/ai-emergency_health_assistant" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a href="https://github.com/anshulsharma200817-svg/ai-emergency_health_assistant" target="_blank" rel="noopener noreferrer">GitHub</a>
           </div>
           <div className="footer-copy">
             ⚠ EDUCATIONAL SOFTWARE SIMULATION ONLY — NOT FOR CLINICAL USE &nbsp;|&nbsp;
