@@ -112,6 +112,12 @@ class TestTemporalGenerator:
         _, y, _ = temporal_batch
         assert set(np.unique(y)).issubset({0, 1, 2, 3})
 
+    def test_balanced_classes(self, temporal_batch):
+        """Each risk class gets an equal share of the generated trajectories."""
+        _, y, _ = temporal_batch
+        counts = np.bincount(y, minlength=4)
+        assert counts.tolist() == [15, 15, 15, 15], counts.tolist()
+
     def test_physiological_values(self, temporal_batch):
         X, _, _ = temporal_batch
         # heart_rate channel

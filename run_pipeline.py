@@ -125,6 +125,23 @@ def load_or_generate_signals(config: dict, quick: bool, skip_generate: bool = Fa
 # Main pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+def use_quick_paths(config: dict) -> dict:
+    """Redirect a quick run to ``*/quick`` subdirectories.
+
+    ``--quick`` is a smoke test: it trains on a few hundred rows with two epochs.
+    Writing that into ``data/raw``, ``models`` or ``experiments/results`` used to
+    overwrite the published production artifacts with toy ones. Keeping every
+    quick output in its own subtree makes the mode non-destructive.
+    """
+    paths = config.setdefault("paths", {})
+    for key in ("data_raw", "data_interim", "data_processed",
+                "models", "experiments", "reports"):
+        if key in paths:
+            paths[key] = os.path.join(paths[key], "quick")
+    logger.info("Quick mode: writing to */quick paths (production artifacts untouched)")
+    return config
+
+
 def enforce_data_quality(report: dict, allow_issues: bool = False) -> None:
     """Abort on data problems that would silently corrupt every metric.
 
@@ -193,6 +210,8 @@ def main() -> None:
         parser.error(f"config file not found: {args.config}")
     except Exception as exc:  # malformed YAML, permissions, …
         parser.error(f"could not read config {args.config}: {exc}")
+    if args.quick:
+        use_quick_paths(config)
     ensure_dirs(config)
 
     # Patch epoch count for quick mode

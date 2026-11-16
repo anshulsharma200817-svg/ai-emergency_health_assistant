@@ -101,12 +101,17 @@ class PreprocessingPipeline:
 
         df_eng = self.feature_engineer.transform(df)
 
-        imputed = self.imputer.transform(df_eng[self.numeric_cols])
-        X = self.scaler.transform(imputed).astype(np.float32)
-
         y = None
         if target_col in df_eng.columns:
             y = df_eng[target_col].map(RISK_CLASS_TO_INT).values.astype(np.int64)
+
+        # Align to the exact training schema. A column the caller omitted becomes
+        # NaN and is median-imputed, instead of raising KeyError — the documented
+        # imputation behaviour. Extra columns (ids, targets) are dropped.
+        df_eng = df_eng.reindex(columns=self.numeric_cols)
+
+        imputed = self.imputer.transform(df_eng)
+        X = self.scaler.transform(imputed).astype(np.float32)
 
         return X, y
 

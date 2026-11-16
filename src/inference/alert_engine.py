@@ -6,6 +6,7 @@ NOT a medical device. Does NOT perform real dispatch, hospital routing, or treat
 
 from typing import Dict, Any, List
 from datetime import datetime
+import uuid
 
 from src.utils.logger import setup_logger
 
@@ -68,7 +69,12 @@ class SimulatedAlertEngine:
             action_desc = "SIMULATED STATUS: Normal parameters within simulation limits."
 
         alert_payload = {
-            "simulation_event_id": f"EVT_{case_id}_{int(datetime.now().timestamp())}",
+            # Millisecond timestamp + random suffix: two alerts raised in the same
+            # second (the old second-resolution id) can no longer collide.
+            "simulation_event_id": (
+                f"EVT_{case_id}_{int(datetime.now().timestamp() * 1000)}_"
+                f"{uuid.uuid4().hex[:8]}"
+            ),
             "case_id": case_id,
             "simulated_risk_class": risk_class,
             "priority": priority,

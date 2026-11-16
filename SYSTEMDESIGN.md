@@ -538,7 +538,7 @@ modality spelled out.
 Design notes:
 
 - Bounds are derived from the generated dataset wherever possible. An earlier pass used
-  `systolic_bp ≥ 50` and rejected 1,916 genuine critical records (SBP 45–49), which is
+  `systolic_bp ≥ 50` and rejected 1,991 genuine critical records (SBP 45–49), which is
   how the lower bound was corrected.
 - A cross-field rule rejects only a **strictly inverted** blood pressure
   (`diastolic_bp > systolic_bp`), which never occurs in the training set. Equality is

@@ -130,6 +130,14 @@ INITIAL_STATE_PROBS: Dict[str, np.ndarray] = {
 
 ALL_TRAJECTORY_TYPES = list(TRANSITION_MATRICES.keys())
 
+# Trajectory types grouped by the risk class they represent. Used to sample
+# labels uniformly: cycling over `ALL_TRAJECTORY_TYPES` would give MODERATE
+# three of the six types (50% of the dataset), which is not class-balanced.
+TRAJECTORY_TYPES_BY_LABEL: Dict[int, List[str]] = {
+    label: [name for name, mapped in TRAJ_TO_LABEL.items() if mapped == label]
+    for label in sorted(set(TRAJ_TO_LABEL.values()))
+}
+
 
 class TemporalDataGenerator:
     """Synthetic temporal trajectory generator for RNN/LSTM experiments.
@@ -235,13 +243,18 @@ class TemporalDataGenerator:
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate a batch of patient trajectories with labels and IDs.
 
-        Balances across trajectory types to produce class-balanced labels.
+        Balances the **risk classes** by cycling labels uniformly, then rotates
+        through the trajectory types available for each class (MODERATE has
+        three: gradual deterioration, recovery and noisy). Every class therefore
+        receives exactly ``N / 4`` trajectories. When `trajectory_types` is given
+        explicitly it is cycled as-is and the resulting labels follow the
+        ``TRAJ_TO_LABEL`` mapping, so the caller controls the distribution.
 
         Args:
             num_trajectories: Total number of trajectories. Defaults to
                 config planned_dataset_sizes.temporal.
             trajectory_types: Explicit list of types to use (cycling). If None,
-                uses all 6 types in balanced rotation.
+                samples each risk class uniformly and covers all 6 types.
 
         Returns:
             Tuple of:
@@ -252,17 +265,29 @@ class TemporalDataGenerator:
         if num_trajectories is None:
             num_trajectories = self.config.get("planned_dataset_sizes", {}).get("temporal", 20000)
 
-        if trajectory_types is None:
-            trajectory_types = ALL_TRAJECTORY_TYPES  # 6 types
+        balanced = trajectory_types is None
+        if balanced:
+            labels = sorted(TRAJECTORY_TYPES_BY_LABEL)
+            type_offsets: Dict[int, int] = {label: 0 for label in labels}
+        else:
+            labels = []
+            type_offsets = {}
 
         X_list:   List[np.ndarray] = []
         y_list:   List[int]        = []
         id_list:  List[str]        = []
 
         for i in range(num_trajectories):
-            t_type = trajectory_types[i % len(trajectory_types)]
-            traj   = self.generate_trajectory(t_type)
-            label  = TRAJ_TO_LABEL[t_type]
+            if balanced:
+                label = labels[i % len(labels)]
+                options = TRAJECTORY_TYPES_BY_LABEL[label]
+                t_type = options[type_offsets[label] % len(options)]
+                type_offsets[label] += 1
+            else:
+                t_type = trajectory_types[i % len(trajectory_types)]
+                label = TRAJ_TO_LABEL[t_type]
+
+            traj = self.generate_trajectory(t_type)
 
             X_list.append(traj)
             y_list.append(label)

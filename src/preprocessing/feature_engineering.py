@@ -73,9 +73,10 @@ class FeatureEngineer:
                 bins=[-np.inf, 18, 65, np.inf],
                 labels=[0, 1, 2]
             )
-            out["age_group"] = age_cut.astype(float).fillna(1.0)
+            out["age_group"] = age_cut.astype(float)
         else:
-            out["age_group"] = 1.0
+            # Unknown input: leave NaN so the pipeline imputer fills the median.
+            out["age_group"] = np.nan
 
         # 5. spo2_severity (ordinal encoded: 0=severe_hypoxia, 1=mild_hypoxia, 2=normal)
         if "spo2" in out.columns:
@@ -84,33 +85,33 @@ class FeatureEngineer:
                 bins=[-np.inf, 88, 94, np.inf],
                 labels=[0, 1, 2]
             )
-            out["spo2_severity"] = spo2_cut.astype(float).fillna(2.0)
+            out["spo2_severity"] = spo2_cut.astype(float)
         else:
-            out["spo2_severity"] = 2.0
+            out["spo2_severity"] = np.nan
 
         # 6. tachycardia_flag
         if "heart_rate" in out.columns:
             out["tachycardia_flag"] = (out["heart_rate"] > 100).astype(int)
         else:
-            out["tachycardia_flag"] = 0
+            out["tachycardia_flag"] = np.nan
 
         # 7. hypotension_flag
         if "systolic_bp" in out.columns:
             out["hypotension_flag"] = (out["systolic_bp"] < 90).astype(int)
         else:
-            out["hypotension_flag"] = 0
+            out["hypotension_flag"] = np.nan
 
         # 8. fever_flag
         if "temperature" in out.columns:
             out["fever_flag"] = (out["temperature"] > 38.0).astype(int)
         else:
-            out["fever_flag"] = 0
+            out["fever_flag"] = np.nan
 
         # 9. tachypnea_flag
         if "respiratory_rate" in out.columns:
             out["tachypnea_flag"] = (out["respiratory_rate"] > 20).astype(int)
         else:
-            out["tachypnea_flag"] = 0
+            out["tachypnea_flag"] = np.nan
 
         logger.info(f"Computed {len(DERIVED_FEATURES)} derived features.")
         return out

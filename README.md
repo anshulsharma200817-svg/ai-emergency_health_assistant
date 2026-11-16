@@ -273,7 +273,7 @@ curl -X POST https://your-app.vercel.app/api/predict \
 |---|---|
 | `src/` | Generators, validation, feature engineering, preprocessing, models, training, evaluation, explainability, inference, alert engine |
 | `web/` | Next.js 16 demo, `/api/predict`, `/api/metrics`, TypeScript inference, frozen model params |
-| `tests/` | 54 tests: 45 integration + 9 schema/config/import units |
+| `tests/` | 69 tests: 60 integration + 9 schema/config/import units |
 | `scripts/` | `export_web_model_params.py` — re-export and verify the served model |
 | `config.yaml` | Single source of truth: seed, splits, paths, hyperparameters |
 | `data/`, `models/`, `experiments/` | Generated artifacts (git-ignored) |

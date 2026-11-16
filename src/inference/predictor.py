@@ -13,6 +13,7 @@ import numpy as np
 from datetime import datetime
 
 from src.preprocessing.pipeline import PreprocessingPipeline, INT_TO_RISK_CLASS
+from src.inference.validation import normalize_vitals
 from src.utils.logger import setup_logger
 
 logger = setup_logger("inference_predictor")
@@ -109,13 +110,20 @@ class HealthRiskPredictor:
         Returns:
             Dict with case_id, predicted_risk_class, confidence probabilities,
             and timestamp.
+
+        Raises:
+            VitalsValidationError: When a field is malformed or outside the
+                accepted range. Absent fields take the healthy-adult default,
+                exactly as the TypeScript API does.
         """
-        df_record = pd.DataFrame([record_dict])
+        vitals = normalize_vitals(record_dict)
+        case_id = (record_dict or {}).get("case_id", "UNKNOWN")
+        df_record = pd.DataFrame([vitals])
         X, _ = self.pipeline.transform(df_record)
 
         if hasattr(self.model, "predict_proba"):
             probs = self.model.predict_proba(X)[0]
-            probs, constraint = apply_data_constraints(probs, record_dict, self.class_labels)
+            probs, constraint = apply_data_constraints(probs, vitals, self.class_labels)
             pred_idx = int(np.argmax(probs))
             prob_dict = {
                 self.class_labels[i]: round(float(probs[i]), 4)
@@ -131,7 +139,7 @@ class HealthRiskPredictor:
         confidence = max(prob_dict.values())
 
         return {
-            "case_id":               record_dict.get("case_id", "UNKNOWN"),
+            "case_id":               case_id,
             "predicted_risk_class":  pred_label,
             "confidence":            round(confidence, 4),
             "probabilities":         prob_dict,
@@ -148,8 +156,22 @@ class HealthRiskPredictor:
 
         Returns:
             List of prediction result dicts.
+
+        Raises:
+            VitalsValidationError: When any record is malformed or out of range.
+                The error names the offending record index.
         """
-        df = pd.DataFrame(records)
+        if not records:
+            return []
+
+        vitals_list: List[Dict[str, Any]] = []
+        for index, record in enumerate(records):
+            try:
+                vitals_list.append(normalize_vitals(record))
+            except ValueError as exc:
+                raise ValueError(f"record {index}: {exc}") from exc
+
+        df = pd.DataFrame(vitals_list)
         X, _ = self.pipeline.transform(df)
 
         results = []
@@ -157,7 +179,7 @@ class HealthRiskPredictor:
             probs_all = self.model.predict_proba(X)
             for i, record in enumerate(records):
                 probs, constraint = apply_data_constraints(
-                    probs_all[i], record, self.class_labels
+                    probs_all[i], vitals_list[i], self.class_labels
                 )
                 pred_idx = int(np.argmax(probs))
                 pred_label = INT_TO_RISK_CLASS.get(pred_idx, "UNKNOWN")

@@ -18,7 +18,7 @@ target:
 # Dataset Sizes (full production scale)
 planned_dataset_sizes:
   tabular:  100000   # 25,000 per class × 4 classes
-  temporal:  20000   # ~3,333 per class × 6 trajectory types
+  temporal:  20000   # 5,000 per class, spread over 6 trajectory types
   signals:   20000   # 5,000 per class × 4 signal patterns
 
 # Temporal sequence configuration

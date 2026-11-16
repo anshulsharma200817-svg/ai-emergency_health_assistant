@@ -46,6 +46,22 @@ def ensure_dirs(config: dict) -> None:
         os.makedirs(config["paths"][key], exist_ok=True)
 
 
+def use_quick_paths(config: dict) -> dict:
+    """Redirect ``--quick`` output to ``data/raw/quick`` so production data is safe.
+
+    A smoke-test dataset is a few hundred rows; writing it to the canonical
+    ``data/raw`` files silently replaced the full 100,000-record dataset that the
+    published models were trained on.
+    """
+    paths = config.setdefault("paths", {})
+    for key in ("data_raw", "data_interim", "data_processed",
+                "models", "experiments", "reports"):
+        if key in paths:
+            paths[key] = os.path.join(paths[key], "quick")
+    logger.info("Quick mode: writing to */quick paths (production data untouched)")
+    return config
+
+
 def generate_tabular(config: dict, quick: bool = False) -> None:
     """Generate and save tabular dataset."""
     logger.info("\n" + "=" * 60)
@@ -137,6 +153,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.quick:
+        use_quick_paths(config)
     ensure_dirs(config)
 
     run_all = not (args.tabular_only or args.temporal_only or args.signals_only)

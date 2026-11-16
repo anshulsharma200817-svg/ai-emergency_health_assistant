@@ -25,7 +25,7 @@ const METRICS = {
       val_macro_f1: 0.9706,
       test_accuracy: 0.9703,
       test_macro_f1: 0.9703,
-      train_time_s: 0.82,
+      train_time_s: 0.79,
       color: '#8b5cf6',
     },
     decision_tree: {
@@ -35,7 +35,7 @@ const METRICS = {
       val_macro_f1: 0.9641,
       test_accuracy: 0.9661,
       test_macro_f1: 0.9662,
-      train_time_s: 0.52,
+      train_time_s: 0.5,
       color: '#a78bfa',
     },
     random_forest: {
@@ -45,7 +45,7 @@ const METRICS = {
       val_macro_f1: 0.9809,
       test_accuracy: 0.9805,
       test_macro_f1: 0.9805,
-      train_time_s: 20.47,
+      train_time_s: 19.46,
       color: '#7c3aed',
     },
   },
@@ -98,9 +98,9 @@ const METRICS = {
     scaling: 'StandardScaler (train only)',
     imputation: 'Median',
     seed: 42,
-    total_time_s: 50.1,
-    tests_passed: 54,
-    tests_total: 54,
+    total_time_s: 49.1,
+    tests_passed: 69,
+    tests_total: 69,
   },
 }
 

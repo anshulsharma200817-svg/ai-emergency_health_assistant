@@ -243,6 +243,7 @@ class DeepLearningTrainer:
         }
         best_val_acc   = -1.0
         best_ckpt_path = os.path.join(self.models_dir, f"{model_type}_best.pt")
+        checkpoint_saved = False
 
         t_total = time.time()
         for epoch in range(1, epochs + 1):
@@ -262,6 +263,7 @@ class DeepLearningTrainer:
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
                     torch.save(model.state_dict(), best_ckpt_path)
+                    checkpoint_saved = True
 
             epoch_time = round(time.time() - t0, 1)
             logger.info(
@@ -271,12 +273,24 @@ class DeepLearningTrainer:
             )
 
         total_time = round(time.time() - t_total, 1)
-        logger.info(f"Training complete in {total_time}s. Best val acc={best_val_acc:.4f}")
+        if val_loader is not None:
+            logger.info(f"Training complete in {total_time}s. Best val acc={best_val_acc:.4f}")
+        else:
+            logger.info(f"Training complete in {total_time}s. No validation split provided.")
 
         # ── Load best checkpoint ──────────────────────────────────────
-        if os.path.exists(best_ckpt_path):
+        # Only load a file this run wrote. Without a validation loader nothing is
+        # saved, and blindly loading `*_best.pt` would resurrect a stale model
+        # from a previous run (or a previous architecture) for the final metrics.
+        if checkpoint_saved:
             model.load_state_dict(torch.load(best_ckpt_path, map_location=self.device))
             logger.info(f"Loaded best checkpoint from {best_ckpt_path}")
+        elif val_loader is None:
+            torch.save(model.state_dict(), best_ckpt_path)
+            checkpoint_saved = True
+            logger.info(f"No validation set: saved final-epoch checkpoint to {best_ckpt_path}")
+        else:
+            logger.warning("No checkpoint was saved during training; keeping final-epoch weights.")
 
         # ── Final evaluation ──────────────────────────────────────────
         val_metrics = test_metrics = None

@@ -156,14 +156,20 @@ function toFlag(raw: unknown): number | null {
   if (raw === true) return 1
   if (raw === false) return 0
   if (raw === 0 || raw === 1) return raw
-  if (raw === '0' || raw === '1') return Number(raw)
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    if (text === '0' || text === '1') return Number(text)
+  }
   return null
 }
 
 /** Sex is strictly binary: 0 or 1 (numeric or string, no booleans, no 0.5). */
 function toSex(raw: unknown): number | null {
   if (raw === 0 || raw === 1) return raw
-  if (raw === '0' || raw === '1') return Number(raw)
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    if (text === '0' || text === '1') return Number(text)
+  }
   return null
 }
 
