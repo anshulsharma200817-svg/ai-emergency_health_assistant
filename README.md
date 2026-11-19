@@ -16,7 +16,7 @@ fully reproducible with seed 42.
 **Live demo:** <https://ai-emergency-health-assistant-kappa.vercel.app/>
 **Technical design:** [`SYSTEMDESIGN.md`](SYSTEMDESIGN.md)
 **Build status:** [`BUILD_STATUS.md`](BUILD_STATUS.md)
-**Project report:** [`documentation/PROJECT_REPORT.md`](documentation/PROJECT_REPORT.md)
+**Documentation index:** [`documentation/`](documentation/)
 
 ---
 
@@ -465,7 +465,7 @@ two minutes and is documented end-to-end in
 | `tests/` | 81 tests: 71 integration + 10 schema/config/import units |
 | `scripts/` | `export_web_model_params.py` — re-export and verify the served model; `export_web_training_results.py` — refresh the home-screen charts from the latest artifacts; `api_edge_check.py` — 160-check HTTP sweep |
 | `screenshots/` | Captured working-project screenshots used in this README |
-| `documentation/` | Project report and documentation index |
+| `documentation/` | Documentation index linking the design, status and architecture docs |
 | `config.yaml` | Single source of truth: seed, splits, paths, hyperparameters |
 | `data/`, `models/`, `experiments/` | Generated artifacts (git-ignored) |
 
@@ -497,7 +497,6 @@ Full file-by-file structure, architecture, and design rationale:
 | Document | Purpose |
 |---|---|
 | `README.md` (this file) | Problem, objectives, technologies, features, setup, screenshots, results |
-| [`documentation/PROJECT_REPORT.md`](documentation/PROJECT_REPORT.md) | Submission-ready project report |
 | `SYSTEMDESIGN.md` | Architecture, data design, models, input→output pipeline, API contract, verification |
 | `BUILD_STATUS.md` | Current completion status and model results |
 | `architecture.md` | Visual overview of the training and serving planes |
