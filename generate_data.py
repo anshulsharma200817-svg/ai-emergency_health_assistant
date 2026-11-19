@@ -8,7 +8,7 @@ Generates all synthetic datasets for the AI Emergency Health Detection System:
 
 Usage:
     python generate_data.py
-    python generate_data.py --quick          # 1K / 400 / 400 samples (smoke test)
+    python generate_data.py --quick          # 1K / 400 / 400 samples in data/raw/quick (smoke test)
     python generate_data.py --tabular-only
     python generate_data.py --temporal-only
     python generate_data.py --signals-only

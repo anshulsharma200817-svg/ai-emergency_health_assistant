@@ -38,7 +38,13 @@ def split_tabular_data(
     """
     assert abs((train_size + val_size + test_size) - 1.0) < 1e-5, "Split proportions must sum to 1.0"
 
-    stratify = df[target_col] if target_col in df.columns else None
+    if target_col not in df.columns:
+        raise ValueError(
+            f"target column {target_col!r} is missing; stratified splitting and "
+            "training both require it"
+        )
+
+    stratify = df[target_col]
 
     # First split off train set
     df_train, df_temp = train_test_split(
@@ -50,7 +56,7 @@ def split_tabular_data(
 
     # Calculate ratio for val vs test out of remaining (1 - train_size)
     relative_val_size = val_size / (val_size + test_size)
-    stratify_temp = df_temp[target_col] if target_col in df_temp.columns else None
+    stratify_temp = df_temp[target_col]
 
     df_val, df_test = train_test_split(
         df_temp,

@@ -2,6 +2,8 @@
 
 import { useRef, useState } from 'react'
 import { VITALS_RANGES, crossFieldError, vitalErrorMessage, type VitalsField } from '@/lib/ranges'
+import TrainingResults from '@/components/TrainingResults'
+import trainingResults from '@/lib/training-results.json'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -41,17 +43,38 @@ const RISK_CONFIG = {
   CRITICAL: { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',   border: 'rgba(239,68,68,0.3)',   emoji: '🚨' },
 }
 
-const MODEL_RESULTS = [
-  { key: 'knn',                name: 'K-Nearest Neighbors', short: 'KNN', testAcc: 0.9586, testF1: 0.9586, color: '#6366f1', meta: 'Classical ML · 4-class · 22 features' },
-  { key: 'logistic_regression',name: 'Logistic Regression',  short: 'LR',  testAcc: 0.9703, testF1: 0.9703, color: '#8b5cf6', meta: 'Classical ML · 4-class · 22 features' },
-  { key: 'decision_tree',      name: 'Decision Tree',         short: 'DT',  testAcc: 0.9661, testF1: 0.9662, color: '#a78bfa', meta: 'Classical ML · 4-class · 22 features' },
-  { key: 'random_forest',      name: 'Random Forest',         short: 'RF',  testAcc: 0.9805, testF1: 0.9805, color: '#7c3aed', best: true, meta: 'Classical ML · 4-class · 22 features' },
+interface DisplayMetric {
+  val_accuracy: number | null
+  val_macro_f1: number | null
+  test_accuracy: number | null
+  test_macro_f1: number | null
+  train_time_s: number | null
+}
+
+const CLASSICAL = trainingResults.classical as Record<string, DisplayMetric>
+const DEEP = trainingResults.deep as Record<string, DisplayMetric>
+
+interface DisplayModel {
+  key: string
+  name: string
+  short: string
+  metric: DisplayMetric
+  color: string
+  meta: string
+  badge?: string
+}
+
+const MODEL_RESULTS: DisplayModel[] = [
+  { key: 'knn',                name: 'K-Nearest Neighbors', short: 'KNN', metric: CLASSICAL.knn,                color: '#6366f1', meta: 'Classical ML · 4-class · 22 features' },
+  { key: 'logistic_regression',name: 'Logistic Regression',  short: 'LR',  metric: CLASSICAL.logistic_regression, color: '#8b5cf6', meta: 'Classical ML · 4-class · 22 features · served in this demo', badge: '✅ Served Model' },
+  { key: 'decision_tree',      name: 'Decision Tree',         short: 'DT',  metric: CLASSICAL.decision_tree,       color: '#a78bfa', meta: 'Classical ML · 4-class · 22 features' },
+  { key: 'random_forest',      name: 'Random Forest',         short: 'RF',  metric: CLASSICAL.random_forest,       color: '#7c3aed', meta: 'Classical ML · 4-class · 22 features · best tabular', badge: '⭐ Best Tabular' },
 ]
 
-const DEEP_MODEL_RESULTS = [
-  { key: 'cnn_1d', name: '1D CNN',  short: 'CNN',  testAcc: 0.9973, testF1: 0.9973, color: '#06b6d4', best: true, meta: 'PyTorch · ECG signal (1×500) · 4-class' },
-  { key: 'rnn',    name: 'GRU-RNN', short: 'GRU',  testAcc: 0.9370, testF1: 0.9362, color: '#0ea5e9', meta: 'PyTorch · 60-step sequence · 4-class' },
-  { key: 'lstm',   name: 'LSTM',    short: 'LSTM', testAcc: 0.9240, testF1: 0.9226, color: '#3b82f6', meta: 'PyTorch · 60-step sequence · 4-class' },
+const DEEP_MODEL_RESULTS: DisplayModel[] = [
+  { key: 'cnn_1d', name: '1D CNN',  short: 'CNN',  metric: DEEP.cnn_1d, color: '#06b6d4', meta: 'PyTorch · ECG signal (1×500) · 4-class', badge: '⭐ Best Deep Model' },
+  { key: 'rnn',    name: 'GRU-RNN', short: 'GRU',  metric: DEEP.rnn,    color: '#0ea5e9', meta: 'PyTorch · 60-step sequence · 4-class' },
+  { key: 'lstm',   name: 'LSTM',    short: 'LSTM', metric: DEEP.lstm,   color: '#3b82f6', meta: 'PyTorch · 60-step sequence · 4-class' },
 ]
 
 const DEFAULT_VITALS: Vitals = {
@@ -246,7 +269,7 @@ export default function Home() {
         <h1>Emergency Health<br />Risk Classification</h1>
         <p className="hero-sub">
           A production-quality synthetic data ML pipeline — 100,000 records,
-          4-class risk stratification, 97.03% held-out accuracy. Live inference demo below.
+          4-class risk stratification, {pct(trainingResults.served.test_accuracy)} held-out accuracy. Live inference demo below.
         </p>
         <div className="hero-buttons">
           <a href="#demo" className="btn btn-primary">🩺 Try Live Demo</a>
@@ -268,7 +291,7 @@ export default function Home() {
           {[
             { num: '100K', label: 'Synthetic Records' },
             { num: '97.0%', label: 'Served Model Accuracy' },
-            { num: '69/69', label: 'Tests Passing' },
+            { num: '81/81', label: 'Tests Passing' },
             { num: '4', label: 'Risk Classes' },
           ].map(s => (
             <div className="stat-cell" key={s.label}>
@@ -321,19 +344,19 @@ export default function Home() {
                 key={m.key}
                 style={{ '--card-color': m.color } as React.CSSProperties}
               >
-                {m.best && <div className="best-badge">⭐ Best Model</div>}
+                {m.badge && <div className="best-badge">{m.badge}</div>}
                 <div className="model-name">{m.name}</div>
                 <div className="model-desc">{m.meta}</div>
                 <div className="metric-row">
                   <span className="metric-label">Test Accuracy</span>
-                  <span className="metric-value">{pct(m.testAcc)}</span>
+                  <span className="metric-value">{pct(m.metric.test_accuracy ?? 0)}</span>
                 </div>
                 <div className="metric-row">
                   <span className="metric-label">Test Macro F1</span>
-                  <span className="metric-value">{m.testF1.toFixed(4)}</span>
+                  <span className="metric-value">{(m.metric.test_macro_f1 ?? 0).toFixed(4)}</span>
                 </div>
                 <div className="accuracy-bar">
-                  <div className="accuracy-fill" style={{ width: pct(m.testAcc) }} />
+                  <div className="accuracy-fill" style={{ width: pct(m.metric.test_accuracy ?? 0) }} />
                 </div>
               </div>
             ))}
@@ -351,23 +374,32 @@ export default function Home() {
                 key={m.key}
                 style={{ '--card-color': m.color } as React.CSSProperties}
               >
-                {m.best && <div className="best-badge">⭐ Best Deep Model</div>}
+                {m.badge && <div className="best-badge">{m.badge}</div>}
                 <div className="model-name">{m.name}</div>
                 <div className="model-desc">{m.meta}</div>
                 <div className="metric-row">
                   <span className="metric-label">Test Accuracy</span>
-                  <span className="metric-value">{pct(m.testAcc)}</span>
+                  <span className="metric-value">{pct(m.metric.test_accuracy ?? 0)}</span>
                 </div>
                 <div className="metric-row">
                   <span className="metric-label">Test Macro F1</span>
-                  <span className="metric-value">{m.testF1.toFixed(4)}</span>
+                  <span className="metric-value">{(m.metric.test_macro_f1 ?? 0).toFixed(4)}</span>
                 </div>
                 <div className="accuracy-bar">
-                  <div className="accuracy-fill" style={{ width: pct(m.testAcc) }} />
+                  <div className="accuracy-fill" style={{ width: pct(m.metric.test_accuracy ?? 0) }} />
                 </div>
               </div>
             ))}
           </div>
+
+          <div className="section-label" style={{ marginTop: 64 }}>Visualizations</div>
+          <h2 className="section-title">Training Results, Visualized</h2>
+          <p className="section-desc" style={{ margin: '8px 0 0' }}>
+            Test accuracy across all seven models, the served model&apos;s confusion
+            matrix, deep-learning validation curves, and the reasoning behind the
+            model chosen for deployment.
+          </p>
+          <TrainingResults />
         </div>
       </section>
 
@@ -624,7 +656,7 @@ export default function Home() {
               { icon: '🔬', title: 'Feature Engineering', desc: '13 vitals + 9 derived = 22 features: pulse pressure, MAP, shock index, clinical severity flags, ordinal encodings.' },
               { icon: '🛡️', title: 'No Data Leakage', desc: 'Stratified 70/15/15 splits, pipeline fitted on train only, ID-based temporal splits prevent sequence leakage.' },
               { icon: '🤖', title: '7 ML/DL Models', desc: 'KNN, Logistic Regression, Decision Tree, Random Forest (classical), plus trained 1D CNN, GRU, and LSTM (PyTorch).' },
-              { icon: '📊', title: '69/69 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
+              { icon: '📊', title: '81/81 Tests Passing', desc: 'Full test coverage: generators, preprocessing, training, inference, alert engine, validator — all verified.' },
               { icon: '🐳', title: 'Docker Ready', desc: 'Single docker compose up command generates data, trains models, and runs the full test suite.' },
             ].map(f => (
               <div className="card" key={f.title}>
@@ -671,8 +703,9 @@ docker compose up --build
 import yaml
 
 config = yaml.safe_load(open("config.yaml"))
+# Served model — the same parameters are exported to web/lib/model-params.json
 predictor = HealthRiskPredictor.from_saved_model(
-    "models/classical/random_forest.joblib",
+    "models/classical/logistic_regression.joblib",
     "models/preprocessing_pipeline.pkl",
     config,
 )
@@ -696,6 +729,7 @@ result = predictor.predict_record({
           <div className="footer-links">
             <a href="#demo">Live Demo</a>
             <a href="#models">Model Results</a>
+            <a href="#model-choice">Model Choice</a>
             <a href="#pipeline">Pipeline</a>
             <a href="#quickstart">Quick Start</a>
             <a href="https://github.com/anshulsharma200817-svg/ai-emergency_health_assistant" target="_blank" rel="noopener noreferrer">GitHub</a>

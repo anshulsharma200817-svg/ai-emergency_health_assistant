@@ -7,13 +7,14 @@ Executes inference on single cases or batch records using trained classical mode
 from typing import Dict, Any, List, Optional
 import os
 import json
+import math
 import joblib
 import pandas as pd
 import numpy as np
 from datetime import datetime
 
 from src.preprocessing.pipeline import PreprocessingPipeline, INT_TO_RISK_CLASS
-from src.inference.validation import normalize_vitals
+from src.inference.validation import VitalsValidationError, normalize_vitals
 from src.utils.logger import setup_logger
 
 logger = setup_logger("inference_predictor")
@@ -26,6 +27,17 @@ logger = setup_logger("inference_predictor")
 # predictions on the full 15,000-row test set. Mirrored in web/lib/inference.ts.
 UNCONSCIOUSNESS_PRIOR = {"HIGH": 0.123, "CRITICAL": 0.877}
 CONSTRAINT_MIN_ALLOWED_MASS = 1e-3
+
+
+def round_half_up(value: float, digits: int = 4) -> float:
+    """Round like JavaScript's ``Math.round`` (half away from zero).
+
+    Python's built-in ``round`` uses banker's rounding, so an exact
+    ``x.xxxx5`` display value could differ from the TypeScript API on the last
+    digit. Probabilities are non-negative, so ``floor(x + 0.5)`` is enough.
+    """
+    factor = 10 ** digits
+    return math.floor(value * factor + 0.5) / factor
 
 
 def apply_data_constraints(
@@ -126,7 +138,7 @@ class HealthRiskPredictor:
             probs, constraint = apply_data_constraints(probs, vitals, self.class_labels)
             pred_idx = int(np.argmax(probs))
             prob_dict = {
-                self.class_labels[i]: round(float(probs[i]), 4)
+                self.class_labels[i]: round_half_up(float(probs[i]), 4)
                 for i in range(min(len(probs), len(self.class_labels)))
             }
         else:
@@ -141,7 +153,7 @@ class HealthRiskPredictor:
         return {
             "case_id":               case_id,
             "predicted_risk_class":  pred_label,
-            "confidence":            round(confidence, 4),
+            "confidence":            round_half_up(confidence, 4),
             "probabilities":         prob_dict,
             "model_used":            self.model_name,
             "timestamp":             datetime.now().isoformat(),
@@ -168,8 +180,12 @@ class HealthRiskPredictor:
         for index, record in enumerate(records):
             try:
                 vitals_list.append(normalize_vitals(record))
-            except ValueError as exc:
-                raise ValueError(f"record {index}: {exc}") from exc
+            except VitalsValidationError as exc:
+                issues = [
+                    dict(issue, message=f"record {index}: {issue['message']}")
+                    for issue in exc.issues
+                ]
+                raise VitalsValidationError(issues) from exc
 
         df = pd.DataFrame(vitals_list)
         X, _ = self.pipeline.transform(df)
@@ -184,13 +200,13 @@ class HealthRiskPredictor:
                 pred_idx = int(np.argmax(probs))
                 pred_label = INT_TO_RISK_CLASS.get(pred_idx, "UNKNOWN")
                 prob_dict = {
-                    self.class_labels[j]: round(float(probs[j]), 4)
+                    self.class_labels[j]: round_half_up(float(probs[j]), 4)
                     for j in range(min(len(probs), len(self.class_labels)))
                 }
                 results.append({
                     "case_id":              record.get("case_id", f"CASE_{i}"),
                     "predicted_risk_class": pred_label,
-                    "confidence":           round(float(max(prob_dict.values())), 4),
+                    "confidence":           round_half_up(float(max(prob_dict.values())), 4),
                     "probabilities":        prob_dict,
                     "model_used":           self.model_name,
                     "applied_constraint":   constraint,

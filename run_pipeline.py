@@ -6,7 +6,7 @@ Orchestrates the full ML/DL workflow:
 
 Usage:
     python run_pipeline.py                  # Full run (reads data/raw or generates if missing)
-    python run_pipeline.py --quick          # Quick smoke test (small data, 2 epochs)
+    python run_pipeline.py --quick          # Quick smoke test (small data, 2 epochs; writes to */quick)
     python run_pipeline.py --classical-only # Skip deep learning
     python run_pipeline.py --deep-only      # Skip classical ML
     python run_pipeline.py --skip-generate  # Use existing data/raw files

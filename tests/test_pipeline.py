@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import tempfile
+import re
 import pytest
 import numpy as np
 import pandas as pd
@@ -290,6 +291,12 @@ class TestDataSplitters:
         # No ID leakage
         assert len(Xtr) + len(Xv) + len(Xt) == len(X)
 
+    def test_missing_target_fails_loudly(self, small_tabular_df):
+        """A missing target must raise, not silently fall back to an unstratified split."""
+        from src.preprocessing.splitters import split_tabular_data
+        with pytest.raises(ValueError, match="risk_class"):
+            split_tabular_data(small_tabular_df.drop(columns=["risk_class"]))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Classical Model Training Tests
@@ -424,9 +431,77 @@ class TestInferencePredictor:
         result = predictor.predict_record(record)
         assert result["applied_constraint"] is None
 
+    def test_missing_field_uses_healthy_default(self, predictor, small_tabular_df):
+        """A missing vital must use the documented default, never raise KeyError."""
+        record = small_tabular_df.iloc[0].to_dict()
+        record.pop("temperature")
+        result = predictor.predict_record(record)
+        assert result["predicted_risk_class"] in {"NORMAL", "MODERATE", "HIGH", "CRITICAL"}
+
+    def test_malformed_field_is_rejected(self, predictor, small_tabular_df):
+        from src.inference.validation import VitalsValidationError
+        record = small_tabular_df.iloc[0].to_dict()
+        record["heart_rate"] = "80abc"
+        with pytest.raises(VitalsValidationError):
+            predictor.predict_record(record)
+
+    def test_out_of_range_is_rejected(self, predictor, small_tabular_df):
+        from src.inference.validation import VitalsValidationError
+        record = small_tabular_df.iloc[0].to_dict()
+        record["temperature"] = 98.6  # Fahrenheit
+        with pytest.raises(VitalsValidationError):
+            predictor.predict_record(record)
+
+    def test_inverted_bp_is_rejected(self, predictor, small_tabular_df):
+        from src.inference.validation import VitalsValidationError
+        record = small_tabular_df.iloc[0].to_dict()
+        record["systolic_bp"] = 100
+        record["diastolic_bp"] = 120
+        with pytest.raises(VitalsValidationError):
+            predictor.predict_record(record)
+
+    def test_equal_bp_is_accepted(self, predictor, small_tabular_df):
+        record = small_tabular_df.iloc[0].to_dict()
+        record["systolic_bp"] = 120
+        record["diastolic_bp"] = 120
+        result = predictor.predict_record(record)
+        assert "predicted_risk_class" in result
+
+    def test_numeric_strings_and_boolean_flags(self, predictor, small_tabular_df):
+        record = small_tabular_df.iloc[0].to_dict()
+        for field in ["age", "sex", "heart_rate", "systolic_bp", "diastolic_bp",
+                      "spo2", "temperature", "respiratory_rate"]:
+            record[field] = f" {record[field]} "
+        record["chest_pain"] = True
+        result = predictor.predict_record(record)
+        assert result["predicted_risk_class"] in {"NORMAL", "MODERATE", "HIGH", "CRITICAL"}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. Alert Engine Tests
+# 9. Validation parity with the web API
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestValidationParity:
+
+    def test_accepted_ranges_match_web_table(self):
+        """`src/inference/validation.py` must not drift from `web/lib/ranges.ts`."""
+        from src.inference.validation import VITALS_RANGES
+        ts_path = os.path.join(os.path.dirname(__file__), "..", "web", "lib", "ranges.ts")
+        with open(ts_path, encoding="utf-8") as f:
+            source = f.read()
+        matches = re.findall(
+            r"^\s{2}(\w+):\s*\{\s*min:\s*(-?\d+(?:\.\d+)?),\s*max:\s*(-?\d+(?:\.\d+)?),",
+            source,
+            re.MULTILINE,
+        )
+        web_ranges = {name: (float(lo), float(hi)) for name, lo, hi in matches}
+        assert set(web_ranges) == set(VITALS_RANGES)
+        for field, bounds in VITALS_RANGES.items():
+            assert web_ranges[field] == bounds, field
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. Alert Engine Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestAlertEngine:
@@ -464,9 +539,15 @@ class TestAlertEngine:
         with pytest.raises(ValueError):
             engine.generate_alert({"case_id": "TEST_001", "probabilities": {}})
 
+    def test_event_ids_are_unique(self, engine):
+        """Rapid alerts in the same second must not share a simulation_event_id."""
+        pred = {"case_id": "TEST_001", "predicted_risk_class": "HIGH", "probabilities": {}}
+        ids = {engine.generate_alert(pred)["simulation_event_id"] for _ in range(100)}
+        assert len(ids) == 100
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. Data Validator Tests
+# 11. Data Validator Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestDataValidator:
@@ -485,6 +566,13 @@ class TestDataValidator:
                     "missing_values", "duplicate_count"]:
             assert key in report
 
+    def test_missing_target_is_invalid(self, small_tabular_df, config):
+        from src.data.validator import DataValidator
+        v = DataValidator(config)
+        ok, errors = v.validate_schema(small_tabular_df.drop(columns=["risk_class"]))
+        assert not ok
+        assert any("risk_class" in error for error in errors)
+
     def test_no_duplicates_generated(self, small_tabular_df, config):
         from src.data.validator import DataValidator
         v = DataValidator(config)
@@ -502,7 +590,7 @@ class TestDataValidator:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 11. Pipeline data-quality gate
+# 12. Pipeline data-quality gate
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestDataQualityGate:

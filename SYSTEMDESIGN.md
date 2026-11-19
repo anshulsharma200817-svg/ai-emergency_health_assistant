@@ -116,7 +116,9 @@ Generation strategies:
   peri-arrest), with bounded noise so distributions overlap realistically rather than
   being trivially separable.
 - **Temporal** — Markov latent-state trajectories over six vital channels for 60
-  timesteps, so deterioration is a *process* rather than a single point.
+  timesteps, so deterioration is a *process* rather than a single point. Risk-class
+  labels are sampled uniformly (5,000 per class); within MODERATE, the generator
+  rotates through its three trajectory types (gradual deterioration, recovery, noisy).
 - **Signal** — ECG-like P/QRS/T waveform synthesis at 500 Hz for one second
   (500 samples), with four pattern families matching the four risk classes.
 
@@ -206,9 +208,9 @@ is **served** (Section 10 explains why that is not a contradiction).
 
 | Model | Input | Architecture | Val Acc | Test Acc | Test Macro F1 | Train time |
 |---|---|---|---|---|---|---|
-| **Physio1DCNN** ⭐ | `(batch, 1, 500)` | Conv1D 1→16 (k=7) → BN → ReLU → Pool → Conv1D 16→32 → BN → ReLU → Pool → AdaptiveAvgPool(16) → Dropout(0.3) → FC | **99.73%** | **99.73%** | **0.9973** | 117 s |
-| **PhysioRNN** (2-layer GRU) | `(batch, 60, 6)` | GRU (hidden 128, 2 layers) → last timestep → Dropout(0.2) → FC | 94.03% | 93.70% | 0.9362 | 530 s |
-| **PhysioLSTM** | `(batch, 60, 6)` | LSTM (hidden 128, 2 layers) → last timestep → Dropout(0.2) → FC | 92.93% | 92.40% | 0.9226 | 436 s |
+| **Physio1DCNN** ⭐ | `(batch, 1, 500)` | Conv1D 1→16 (k=7) → BN → ReLU → Pool → Conv1D 16→32 → BN → ReLU → Pool → AdaptiveAvgPool(16) → Dropout(0.3) → FC | **99.80%** | **99.87%** | **0.9987** | 132 s |
+| **PhysioRNN** (2-layer GRU) | `(batch, 60, 6)` | GRU (hidden 128, 2 layers) → last timestep → Dropout(0.2) → FC | 95.53% | 95.53% | 0.9545 | 647 s |
+| **PhysioLSTM** | `(batch, 60, 6)` | LSTM (hidden 128, 2 layers) → last timestep → Dropout(0.2) → FC | 94.97% | 95.03% | 0.9496 | 481 s |
 
 Training protocol: 20 epochs, Adam (lr = 1e-3), CrossEntropyLoss, batch size 128, best
 checkpoint selected by validation accuracy, CPU-only PyTorch 2.15. Kernel size for the
@@ -478,13 +480,13 @@ arithmetic. Consequences:
 
 | Model | Test Acc | Served? | Reason |
 |---|---|---|---|
-| **Logistic Regression** | 97.03% | ✅ | 1.2 KB joblib → 4.4 KB JSON, ~40 lines of arithmetic, exact parity |
+| **Logistic Regression** | 97.03% | ✅ | 1.2 KB joblib → 4.4 KB JSON, ~40 lines of arithmetic, 0 label diffs / 1.3 × 10⁻⁶ probability parity |
 | Random Forest | 98.05% | ❌ | 200 trees, **795,402 nodes**, 76 MB joblib → ≈32 MB compact JSON plus a traversal evaluator |
 | KNN | 95.86% | ❌ | 6.5 MB joblib (70,000 × 22 training vectors) and per-request distance computation |
 | Decision Tree | 96.61% | ❌ | 80 KB and portable, but less accurate than LR |
-| 1D CNN | 99.73% | ❌ | needs a PyTorch runtime and a 500-sample ECG, which the vitals form cannot produce |
-| GRU | 93.70% | ❌ | needs a 60-step × 6-channel trajectory, not available from the form |
-| LSTM | 92.40% | ❌ | same as GRU |
+| 1D CNN | 99.87% | ❌ | needs a PyTorch runtime and a 500-sample ECG, which the vitals form cannot produce |
+| GRU | 95.53% | ❌ | needs a 60-step × 6-channel trajectory, not available from the form |
+| LSTM | 95.03% | ❌ | same as GRU |
 
 Serving cost is measured, not estimated: Random Forest hits its `max_depth=20` cap in
 every tree, and a compact export (feature/threshold/left/right arrays plus leaf class
@@ -741,6 +743,14 @@ posted to `/api/predict` and compared with the Python `PreprocessingPipeline` +
 | Maximum probability difference | **0** (both sides round to 4 dp) |
 | `applied_constraint` mismatches | **0** |
 
+Raw decision-function outputs agree to **1.27 × 10⁻⁶**. When the 4-decimal API
+response is compared cell-by-cell with scikit-learn's float32 probabilities over all
+15,000 rows (60,000 cells), **5 cells differ in the last digit**: each sits exactly on
+an `x.xxxx5` rounding tie, where float32 and float64 land on opposite sides. No label
+changes, and confidence differs in 4 rows. Rounded probabilities of 163 rows sum to
+1 ± 1 × 10⁻⁴ rather than exactly 1, because four independent 4-dp roundings cannot
+always close to 1. This is display rounding, not model drift.
+
 Together these cover normalization, the strict coercion layer, feature engineering,
 imputation, scaling, coefficients, softmax and the red-flag constraint — not just the
 coefficients.
@@ -755,7 +765,7 @@ Held-out accuracy from exported params: 0.9703
 ```
 
 The script exits non-zero below **0.965** accuracy or when the held-out split has
-fewer than **8,000** rows (which is what a `--quick` run produces), and prints
+fewer than **8,000** rows (a smoke-test or partial dataset), and prints
 retraining instructions. `--allow-small` overrides the row-count check. It also
 generates `web/lib/training-support.json` from the raw training CSV, so the
 extrapolation bounds are measured rather than hand-copied — that is how the true
@@ -810,26 +820,27 @@ Retraining reproduces the published metrics exactly, which is how the 95.86 / 97
 
 ---
 
-## 14. Test strategy — 69/69 passing
+## 14. Test strategy — 81/81 passing
 
 ```bash
-pytest tests -q      # 69 passed in ~2.5 s
+pytest tests -q      # 81 passed in ~7 s
 ```
 
 | Suite | Tests | Coverage |
 |---|---|---|
 | `TestTabularGenerator` | 7 | shape, class balance, ranges, physiological validity |
-| `TestTemporalGenerator` | 5 | shapes, label range, physiological values, dtypes |
+| `TestTemporalGenerator` | 6 | shapes, class balance, label range, physiological values, dtypes |
 | `TestSignalGenerator` | 5 | shape, labels, class balance, single-signal invariants |
 | `TestFeatureEngineering` | 3 | derived columns, pulse-pressure formula, binary flags |
 | `TestPreprocessingPipeline` | 6 | fit/transform, NaN-free output, leakage guard, save/load |
-| `TestDataSplitters` | 3 | sizes, no `case_id` overlap, no temporal leakage |
+| `TestDataSplitters` | 4 | sizes, no `case_id` overlap, no temporal leakage, missing target raises |
 | `TestClassicalTraining` | 3 | all four models present, metrics in [0,1], better than random |
-| `TestInferencePredictor` | 7 | result keys, valid class, probabilities sum to 1, batch mode, unconsciousness constraint (single + batch), no constraint without the flag |
-| `TestAlertEngine` | 11 | P0–P3 mapping, disclaimer, unknown/missing class raises |
-| `TestDataValidator` | 4 | schema, report structure, duplicates, range violations |
+| `TestInferencePredictor` | 13 | result keys, valid class, probabilities sum to 1, batch mode, unconsciousness constraint (single + batch), no constraint without the flag, missing-field default, malformed/out-of-range/inverted-BP rejection, equality BP, string coercion |
+| `TestAlertEngine` | 12 | P0–P3 mapping, disclaimer, unknown/missing class raises, unique event ids |
+| `TestDataValidator` | 5 | schema, report structure, duplicates, range violations, missing target is invalid |
 | `TestDataQualityGate` | 6 | clean data passes; schema/duplicates/nulls/ranges abort; override |
-| Schema/config/import units | 9 | schema definitions, config parsing, module imports |
+| `TestValidationParity` | 1 | Python accepted ranges match `web/lib/ranges.ts` |
+| Schema/config/import units | 10 | schema definitions, config parsing, module imports, annotation resolution |
 
 Tests are **hermetic with respect to artifacts**: model training inside tests writes to
 a temporary directory, never to `models/` or `experiments/`.
@@ -918,9 +929,12 @@ ai-emergency_health_assistant/
 │   │   └── api/
 │   │       ├── predict/route.ts   # POST /api/predict — live inference
 │   │       └── metrics/route.ts   # GET  /api/metrics — training results
+│   ├── components/
+│   │   └── TrainingResults.tsx    # Accuracy bars, confusion matrix, curves, rationale
 │   ├── lib/
 │   │   ├── inference.ts           # Feature engineering + LR in TypeScript
-│   │   └── model-params.json      # Exported scaler/imputer/coef parameters
+│   │   ├── model-params.json      # Exported scaler/imputer/coef parameters
+│   │   └── training-results.json  # Metrics + curves exported for the charts
 │   ├── public/                    # Static assets (currently empty)
 │   ├── package.json
 │   └── next.config.mjs
@@ -929,10 +943,11 @@ ai-emergency_health_assistant/
 ├── reports/                       # Report output directory (currently empty)
 │
 ├── scripts/
-│   └── export_web_model_params.py # Re-export model JSON + accuracy guard
+│   ├── export_web_model_params.py # Re-export model JSON + accuracy guard
+│   └── export_web_training_results.py # Refresh home-screen charts from artifacts
 │
 └── tests/
-    ├── test_pipeline.py           # 45 integration tests
+    ├── test_pipeline.py           # 71 integration tests
     ├── test_schema.py             # Schema & feature definition tests
     ├── test_config.py             # Config parsing tests
     └── test_imports.py            # Module import sanity tests
@@ -977,6 +992,18 @@ curl -s https://your-app.vercel.app/api/predict | jq '.status, .accepted_ranges'
 ```bash
 python3 run_pipeline.py --classical-only --skip-generate
 python3 scripts/export_web_model_params.py      # fails if accuracy < 0.965
+```
+
+### Smoke-testing without touching production artifacts
+
+`--quick` writes every output under a `quick/` subdirectory
+(`data/raw/quick`, `data/processed/quick`, `models/quick`, `experiments/quick`).
+A two-epoch run can therefore never overwrite the published datasets, checkpoints
+or result JSON with a 1,000-row toy model. The export script keeps reading only
+the canonical `models/` and `data/processed/` paths.
+
+```bash
+python3 run_pipeline.py --quick
 ```
 
 ---

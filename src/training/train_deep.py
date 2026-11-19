@@ -11,6 +11,7 @@ loss, epoch-level train/val tracking, and best-model checkpointing for:
 from typing import Dict, Any, Optional, List, Tuple
 import os
 import json
+import random
 import time
 
 try:
@@ -28,6 +29,10 @@ from src.evaluation.metrics import ModelEvaluator
 from src.utils.logger import setup_logger
 
 logger = setup_logger("train_deep")
+
+# Stable per-architecture offsets so each model is reproducible without all
+# three sharing the same RNG stream (and without depending on call order).
+MODEL_SEED_OFFSETS = {"cnn_1d": 0, "rnn": 1000, "lstm": 2000}
 
 
 class DeepLearningTrainer:
@@ -60,7 +65,8 @@ class DeepLearningTrainer:
     # ------------------------------------------------------------------
 
     def _make_loader(
-        self, X: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool = True
+        self, X: np.ndarray, y: np.ndarray, batch_size: int,
+        shuffle: bool = True, seed: Optional[int] = None,
     ) -> "DataLoader":
         """Build a PyTorch DataLoader from numpy arrays.
 
@@ -69,6 +75,7 @@ class DeepLearningTrainer:
             y: Label array.
             batch_size: Mini-batch size.
             shuffle: Whether to shuffle samples.
+            seed: Optional generator seed for deterministic shuffling.
 
         Returns:
             DataLoader instance.
@@ -76,7 +83,14 @@ class DeepLearningTrainer:
         X_t = torch.tensor(X, dtype=torch.float32)
         y_t = torch.tensor(y, dtype=torch.long)
         dataset = TensorDataset(X_t, y_t)
-        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0)
+        generator = None
+        if shuffle and seed is not None:
+            generator = torch.Generator()
+            generator.manual_seed(int(seed))
+        return DataLoader(
+            dataset, batch_size=batch_size, shuffle=shuffle,
+            num_workers=0, generator=generator,
+        )
 
     # ------------------------------------------------------------------
     # Training loop
@@ -183,6 +197,17 @@ class DeepLearningTrainer:
         """
         deep_cfg = self.config.get("models", {}).get("deep", {})
 
+        # Seed before construction so weight init, dropout and shuffling are all
+        # deterministic. Previously nothing was seeded, so "reproducible" reruns
+        # produced different deep metrics on byte-identical signal data.
+        base_seed = int(self.config.get("random_seed", 42))
+        model_seed = base_seed + MODEL_SEED_OFFSETS.get(model_type, 0)
+        random.seed(model_seed)
+        np.random.seed(model_seed)
+        torch.manual_seed(model_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(model_seed)
+
         # ── Build model ───────────────────────────────────────────────
         if model_type == "cnn_1d":
             cfg = deep_cfg.get("cnn_1d", {})
@@ -227,7 +252,9 @@ class DeepLearningTrainer:
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss()
 
-        train_loader = self._make_loader(X_train, y_train, batch_size, shuffle=True)
+        train_loader = self._make_loader(
+            X_train, y_train, batch_size, shuffle=True, seed=model_seed
+        )
         val_loader   = self._make_loader(X_val,   y_val,   batch_size, shuffle=False) if X_val is not None else None
         test_loader  = self._make_loader(X_test,  y_test,  batch_size, shuffle=False) if X_test is not None else None
 

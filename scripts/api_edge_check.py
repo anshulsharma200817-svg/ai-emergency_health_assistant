@@ -29,6 +29,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORT_PATH = ROOT / "web" / "lib" / "training-support.json"
+RESULTS_DIR = ROOT / "experiments" / "results"
+
+# Fallbacks for a fresh clone (results/ is git-ignored). When local results
+# exist they are the source of truth, so this sweep cannot keep passing after a
+# retrain while /api/metrics still serves the old numbers.
+FALLBACK_CLASSICAL = {
+    "knn": 0.9586,
+    "logistic_regression": 0.9703,
+    "decision_tree": 0.9661,
+    "random_forest": 0.9805,
+}
+FALLBACK_DEEP = {"cnn_1d": 0.9987, "rnn": 0.9553, "lstm": 0.9503}
+
+
+def expected_metrics(filename: str, fallback: dict[str, float]) -> dict[str, float]:
+    path = RESULTS_DIR / filename
+    if not path.exists():
+        return fallback
+    with open(path, encoding="utf-8") as handle:
+        results = json.load(handle)
+    return {
+        key: round(float(value["test_accuracy"]), 4)
+        for key, value in results.items()
+        if isinstance(value, dict) and "test_accuracy" in value
+    }
 
 RANGES = {
     "age": (0, 120),
@@ -444,13 +469,14 @@ def main() -> int:
         metrics = json.load(response)
     classical = {k: v["test_accuracy"] for k, v in metrics["models"].items()}
     deep = {k: v["test_accuracy"] for k, v in metrics["deep_models"].items()}
-    for key, expected in {"knn": 0.9586, "logistic_regression": 0.9703,
-                          "decision_tree": 0.9661, "random_forest": 0.9805}.items():
+    expected_classical = expected_metrics("classical_results.json", FALLBACK_CLASSICAL)
+    expected_deep = expected_metrics("deep_results.json", FALLBACK_DEEP)
+    for key, expected in expected_classical.items():
         if abs(classical.get(key, -1) - expected) > 1e-4:
             fail(f"metrics classical {key}", [f"{classical.get(key)} != {expected}"])
         else:
             passes += 1
-    for key, expected in {"cnn_1d": 0.9973, "rnn": 0.937, "lstm": 0.924}.items():
+    for key, expected in expected_deep.items():
         if abs(deep.get(key, -1) - expected) > 1e-4:
             fail(f"metrics deep {key}", [f"{deep.get(key)} != {expected}"])
         else:

@@ -3,11 +3,11 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'AI Emergency Health Detection System',
-  description: 'Educational ML pipeline for synthetic physiological data classification — 100K records, 98%+ accuracy, 4-class risk stratification. Educational simulation only.',
+  description: 'Educational ML pipeline for synthetic physiological data classification — 100K records, 7 trained models, 4-class risk stratification, 97%+ served accuracy. Educational simulation only.',
   keywords: ['machine learning', 'health detection', 'synthetic data', 'emergency', 'AI', 'classification'],
   openGraph: {
     title: 'AI Emergency Health Detection System',
-    description: 'Educational ML pipeline for synthetic physiological data — 100K records, 98% accuracy',
+    description: 'Educational ML pipeline for synthetic physiological data — 100K records, 7 trained models, 97%+ served accuracy',
     type: 'website',
   },
 }

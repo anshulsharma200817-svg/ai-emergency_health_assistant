@@ -5,6 +5,7 @@ import {
   VitalsValidationError,
   predictRisk,
 } from '@/lib/inference'
+import trainingResults from '@/lib/training-results.json'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -65,7 +66,7 @@ export async function GET() {
     {
       status: 'ok',
       model: 'LogisticRegression (multinomial, lbfgs)',
-      test_accuracy: 0.9703,
+      test_accuracy: trainingResults.served.test_accuracy,
       temperature_unit: 'C (send temperature_unit: "F" for Fahrenheit)',
       accepted_ranges: VITALS_RANGES,
       sample_prediction: predictRisk(DEFAULT_VITALS),

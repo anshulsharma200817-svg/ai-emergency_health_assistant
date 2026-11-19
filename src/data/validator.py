@@ -4,7 +4,7 @@ Educational Software Simulation.
 Provides schema validation, range checks, missing value reporting, outlier detection, and duplicate checks.
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 
@@ -35,7 +35,8 @@ class DataValidator:
             Tuple of (is_valid, list_of_error_strings).
         """
         errors = []
-        missing_cols = set(RAW_FEATURES) - set(df.columns)
+        required = set(RAW_FEATURES) | {"risk_class"}
+        missing_cols = required - set(df.columns)
         if missing_cols:
             errors.append(f"Missing required columns in dataset: {sorted(list(missing_cols))}")
 

@@ -1,86 +1,74 @@
 import { NextResponse } from 'next/server'
+import trainingResults from '@/lib/training-results.json'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * GET /api/metrics — pre-computed training results and dataset statistics.
- * No model loading or computation happens here.
+ *
+ * Model scores are imported from `web/lib/training-results.json`, which
+ * `scripts/export_web_training_results.py` writes from the fitted artifacts.
+ * The API and the home screen therefore read the same numbers, so a retrain
+ * cannot leave one showing stale metrics.
  */
+
+interface ExportedMetric {
+  val_accuracy: number | null
+  val_macro_f1: number | null
+  test_accuracy: number | null
+  test_macro_f1: number | null
+  train_time_s: number | null
+}
+
+const CLASSICAL = trainingResults.classical as Record<string, ExportedMetric>
+const DEEP = trainingResults.deep as Record<string, ExportedMetric>
+
+const CLASSICAL_META = {
+  knn: { name: 'K-Nearest Neighbors', short: 'KNN', color: '#6366f1' },
+  logistic_regression: { name: 'Logistic Regression', short: 'LR', color: '#8b5cf6' },
+  decision_tree: { name: 'Decision Tree', short: 'DT', color: '#a78bfa' },
+  random_forest: { name: 'Random Forest', short: 'RF', color: '#7c3aed' },
+} as const
+
+const DEEP_META = {
+  cnn_1d: { name: '1D CNN', short: 'CNN', input: 'ECG signal (1×500)', color: '#06b6d4' },
+  rnn: { name: 'GRU-RNN', short: 'GRU', input: '60-step sequence (6 channels)', color: '#0ea5e9' },
+  lstm: { name: 'LSTM', short: 'LSTM', input: '60-step sequence (6 channels)', color: '#3b82f6' },
+} as const
+
 const METRICS = {
-  models: {
-    knn: {
-      name: 'K-Nearest Neighbors',
-      short: 'KNN',
-      val_accuracy: 0.9586,
-      val_macro_f1: 0.9586,
-      test_accuracy: 0.9586,
-      test_macro_f1: 0.9586,
-      train_time_s: 0.01,
-      color: '#6366f1',
-    },
-    logistic_regression: {
-      name: 'Logistic Regression',
-      short: 'LR',
-      val_accuracy: 0.9706,
-      val_macro_f1: 0.9706,
-      test_accuracy: 0.9703,
-      test_macro_f1: 0.9703,
-      train_time_s: 0.79,
-      color: '#8b5cf6',
-    },
-    decision_tree: {
-      name: 'Decision Tree',
-      short: 'DT',
-      val_accuracy: 0.9641,
-      val_macro_f1: 0.9641,
-      test_accuracy: 0.9661,
-      test_macro_f1: 0.9662,
-      train_time_s: 0.5,
-      color: '#a78bfa',
-    },
-    random_forest: {
-      name: 'Random Forest',
-      short: 'RF',
-      val_accuracy: 0.9809,
-      val_macro_f1: 0.9809,
-      test_accuracy: 0.9805,
-      test_macro_f1: 0.9805,
-      train_time_s: 19.46,
-      color: '#7c3aed',
-    },
-  },
-  deep_models: {
-    cnn_1d: {
-      name: '1D CNN',
-      short: 'CNN',
-      input: 'ECG signal (1×500)',
-      val_accuracy: 0.9973,
-      test_accuracy: 0.9973,
-      test_macro_f1: 0.9973,
-      train_time_s: 117.1,
-      color: '#06b6d4',
-    },
-    rnn: {
-      name: 'GRU-RNN',
-      short: 'GRU',
-      input: '60-step sequence (6 channels)',
-      val_accuracy: 0.9403,
-      test_accuracy: 0.9370,
-      test_macro_f1: 0.9362,
-      train_time_s: 529.6,
-      color: '#0ea5e9',
-    },
-    lstm: {
-      name: 'LSTM',
-      short: 'LSTM',
-      input: '60-step sequence (6 channels)',
-      val_accuracy: 0.9293,
-      test_accuracy: 0.9240,
-      test_macro_f1: 0.9226,
-      train_time_s: 436.2,
-      color: '#3b82f6',
-    },
-  },
+  models: Object.fromEntries(
+    Object.entries(CLASSICAL_META).map(([key, meta]) => {
+      const metrics = CLASSICAL[key]
+      return [
+        key,
+        {
+          ...meta,
+          val_accuracy: metrics.val_accuracy,
+          val_macro_f1: metrics.val_macro_f1,
+          test_accuracy: metrics.test_accuracy,
+          test_macro_f1: metrics.test_macro_f1,
+          train_time_s: metrics.train_time_s,
+        },
+      ]
+    }),
+  ),
+  deep_models: Object.fromEntries(
+    Object.entries(DEEP_META).map(([key, meta]) => {
+      const metrics = DEEP[key]
+      return [
+        key,
+        {
+          ...meta,
+          val_accuracy: metrics.val_accuracy,
+          test_accuracy: metrics.test_accuracy,
+          test_macro_f1: metrics.test_macro_f1,
+          train_time_s: metrics.train_time_s,
+        },
+      ]
+    }),
+  ),
+  served_model: trainingResults.served.model,
   dataset: {
     tabular_total: 100000,
     temporal_total: 20000,
@@ -98,9 +86,9 @@ const METRICS = {
     scaling: 'StandardScaler (train only)',
     imputation: 'Median',
     seed: 42,
-    total_time_s: 49.1,
-    tests_passed: 69,
-    tests_total: 69,
+    total_time_s: 99.5,
+    tests_passed: 81,
+    tests_total: 81,
   },
 }
 

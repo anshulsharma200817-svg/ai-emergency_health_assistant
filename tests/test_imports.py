@@ -24,6 +24,14 @@ def test_imports_all_modules():
     assert src.inference is not None
 
 
+def test_type_annotations_resolve():
+    """Every annotation must be importable (catches missing typing names)."""
+    from typing import get_type_hints
+    from src.data.validator import DataValidator
+
+    assert get_type_hints(DataValidator.check_duplicates)
+
+
 def test_generator_instantiation():
     """Verify data generator classes instantiate with config."""
     from src.utils.config_loader import load_config

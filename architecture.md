@@ -71,8 +71,8 @@ one artifact: `web/lib/model-params.json`.
 | Modality | Input shape | Models | Test accuracy |
 |---|---|---|---|
 | Tabular vitals | `(n, 22)` | KNN · Logistic Regression · Decision Tree · Random Forest | 95.86 – 98.05% |
-| Temporal sequence | `(n, 60, 6)` | GRU · LSTM | 93.70% · 92.40% |
-| ECG-like signal | `(n, 1, 500)` | 1D CNN | 99.73% |
+| Temporal sequence | `(n, 60, 6)` | GRU · LSTM | 95.53% · 95.03% |
+| ECG-like signal | `(n, 1, 500)` | 1D CNN | 99.87% |
 
 Only the tabular family can be driven from a 13-field web form, which is why the hosted
 demo serves Logistic Regression. See `SYSTEMDESIGN.md` §9.
