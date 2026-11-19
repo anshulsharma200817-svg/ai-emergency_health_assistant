@@ -72,9 +72,9 @@ reviewer can audit line by line.
 | 7 | Reproducibility | Deterministic reruns | ✅ Seed 42; retraining reproduced every metric |
 | 8 | Test coverage | 100% passing | ✅ 81/81 |
 | 9 | Deployable without Python | Zero runtime ML dependencies | ✅ 4.4 KB frozen parameters + TypeScript |
-| 10 | Serving parity | No drift from Python | ✅ 15,000 held-out rows: 0 label diffs; 5/60,000 probability cells differ by 1e-4 (float32 rounding ties) |
+| 10 | Serving parity | No drift from Python | ✅ 15,000 held-out rows: 0 label diffs; 5 of 60,000 rounded probability cells differ in the last digit (4-dp rounding ties) |
 | 11 | Safety guardrails | Reject implausible input | ✅ Range validation, explicit units, disclaimers |
-| 12 | Honest documentation | Decisions and limits written down | ✅ README + SYSTEMDESIGN + BUILD_STATUS + report |
+| 12 | Honest documentation | Decisions and limits written down | ✅ README + SYSTEMDESIGN + BUILD_STATUS + documentation index |
 
 ---
 
@@ -105,8 +105,9 @@ reviewer can audit line by line.
 - **Three synthetic clinical modalities generated from scratch** — 100,000 tabular
   records, 20,000 temporal sequences, 20,000 ECG-like waveforms, all class-balanced and
   reproducible from seed 42.
-- **22 leakage-free features** — 13 raw vitals plus 9 derived clinical features (pulse
-  pressure, MAP, shock index, age band, SpO₂ severity band, four binary criteria).
+- **22 leakage-free features** — 13 raw inputs (8 vitals + 5 symptoms) plus 9 derived
+  clinical features (pulse pressure, MAP, shock index, age band, SpO₂ severity band,
+  four binary criteria).
 - **Seven trained models with published metrics** — four classical (KNN, LR, DT, RF) and
   three deep (1D CNN, GRU, LSTM), all scored on held-out splits never used for fitting
   or model selection.
@@ -126,7 +127,7 @@ reviewer can audit line by line.
 - **Two JSON APIs** — `POST /api/predict` for inference and `GET /api/metrics` for the
   published training results, both CORS-enabled and independently testable.
 - **Reproducibility and parity** — fixed seed, frozen splits, an export guard, and a
-  Python↔TypeScript parity check over the full test set and 1,282 raw records.
+  Python↔TypeScript parity check over the full test set and a 1,282-record fuzz sweep.
 - **Automated verification** — 81 pytest tests plus a 160-check HTTP edge sweep covering
   boundaries, type confusion, concurrency and determinism.
 
@@ -170,8 +171,9 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 cd web && npm install && cd ..
 ```
 
-The repository ships without generated data or trained models; they are git-ignored and
-produced by the pipeline in step 1 of §8.
+The repository ships without generated datasets or joblib/PyTorch checkpoints; they are
+git-ignored and produced by the pipeline in step 1 of §8. The small exported JSON files
+the web app needs are committed.
 
 ---
 
@@ -206,7 +208,7 @@ python3 run_pipeline.py --deep-only --skip-generate
 ```
 
 Trains the 1D CNN, GRU and LSTM for 20 epochs each with per-epoch train/validation
-tracking and best-checkpoint saving. CPU-only; roughly 20 minutes for all three.
+tracking and best-checkpoint saving. CPU-only; roughly 21 minutes for all three.
 
 ### 8.4 Web demo locally
 
@@ -246,7 +248,9 @@ curl -X POST https://your-app.vercel.app/api/predict \
 
 ## 9. Database configuration
 
-**Not applicable.** The project uses no database.
+**Not applicable to the ML project or the deployed demo.** Neither uses a database;
+the unrelated `backend/` auth demo described in §14 is not part of this project or
+deployment.
 
 - Training data is generated into flat files (`data/raw/*.csv`, `data/processed/*.npy`).
 - Models are persisted with `joblib` and exported to JSON under `web/lib/`.
@@ -307,7 +311,7 @@ tabular data; 5,000 per class for temporal sequences and signals):
 
 | Modality | Method | Volume | Shape |
 |---|---|---|---|
-| **Tabular** | Scenario-based vitals + symptoms with bounded noise | 100,000 records | 14 raw columns → 22 features |
+| **Tabular** | Scenario-based vitals + symptoms with bounded noise | 100,000 records | 14 raw columns (13 inputs + `case_id`) → 22 features |
 | **Temporal** | Markov latent-state trajectories | 20,000 sequences | (60 timesteps × 6 channels) |
 | **Signal** | P/QRS/T ECG-like waveform synthesis at 500 Hz | 20,000 waveforms | (1 × 500) |
 
@@ -316,7 +320,7 @@ is trained.
 
 ### 11.2 Engineered 22 features, with no leakage
 
-Nine clinical features are derived on top of the 13 raw vitals: pulse pressure, mean
+Nine clinical features are derived on top of the 13 raw inputs: pulse pressure, mean
 arterial pressure, shock index, age band, SpO₂ severity band, and four binary criteria
 (tachycardia, hypotension, fever, tachypnea).
 
@@ -382,9 +386,10 @@ artifacts so the page cannot drift from the models it describes.
 
 - **Parity test, two layers:** the exported parameters reproduce scikit-learn on all
   **15,000** held-out rows (0 label differences, maximum probability difference
-  `1.27 × 10⁻⁶`), and **1,282 raw records** (591 with `unconsciousness = 1`) sent through
-  the HTTP API matched the Python pipeline with 0 label mismatches, 0 constraint
-  mismatches and a maximum probability difference of `1 × 10⁻⁴` — only at 4-decimal
+  `1.27 × 10⁻⁶`). A **600-record held-out HTTP check** matched the Python pipeline with
+  0 label mismatches and 0 `applied_constraint` mismatches, and a wider
+  **1,282-record fuzz sweep** (591 with `unconsciousness = 1`) also produced 0 label
+  mismatches, with a maximum 4-dp probability difference of `1 × 10⁻⁴` — only at
   rounding ties.
 - **Input validation:** every vital is range-checked server-side; out-of-range input
   returns `400` with a per-field reason. Malformed values (`"abc"`, `"80abc"`, `"0x50"`,
@@ -398,10 +403,10 @@ artifacts so the page cannot drift from the models it describes.
 - **No stale verdicts:** a displayed result is stamped with the values it was scored for
   and is discarded the moment any input changes — the panel can never show a confident
   answer beside vitals it never saw.
-- **Extrapolation is labelled:** accepted ranges are wider than the training data (ages
-  18–89, temperatures 30.5–44.49 °C), so inputs outside that support still score but come
-  back with `distribution_warning` and an amber banner instead of being presented as
-  ordinary results. The support bounds are **generated** from the training CSV by the
+- **Extrapolation is labelled:** the accepted ranges (age 0–120, temperature 25–45 °C)
+  are wider than the training support (ages 18–89, temperatures 30.5–44.49 °C), so
+  inputs outside that support still score but come back with `distribution_warning` and
+  an amber banner instead of being presented as ordinary results. The support bounds are **generated** from the training CSV by the
   export script rather than hand-copied, which is how the true temperature maximum was
   found to be 44.49 °C, not 44.5 °C.
 - **Test isolation and export guard:** a test run previously overwrote the production
@@ -483,7 +488,7 @@ Full file-by-file structure, architecture, and design rationale:
   serves a tabular model because the form collects tabular vitals. The rationale is in
   `SYSTEMDESIGN.md` §9.
 - **No authentication or rate limiting** on the public demo endpoints.
-- **One data artifact:** 15 of 100,000 synthetic training rows have
+- **One data artifact:** 15 of 100,000 synthetic dataset rows have
   `diastolic == systolic` because one-decimal rounding collapsed a near-equal pair.
   The dataset is frozen so published metrics stay reproducible; the API accepts equality
   and rejects inversion (see `SYSTEMDESIGN.md` §3.1).
@@ -500,6 +505,7 @@ Full file-by-file structure, architecture, and design rationale:
 | `SYSTEMDESIGN.md` | Architecture, data design, models, input→output pipeline, API contract, verification |
 | `BUILD_STATUS.md` | Current completion status and model results |
 | `architecture.md` | Visual overview of the training and serving planes |
+| `documentation/README.md` | Index and suggested reading order for the documents above |
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Document type:** Technical system design and implementation record
 **Project:** AI-Based Emergency Health Detection and Alert System
-**Stack:** Python 3.10+ (NumPy, pandas, scikit-learn, PyTorch), Next.js 16 (TypeScript), Vercel
+**Stack:** Python 3.11+ (NumPy, pandas, scikit-learn, PyTorch), Next.js 16 (TypeScript), Vercel
 **Data:** 100% synthetic — 100,000 tabular records, 20,000 temporal sequences, 20,000 ECG-like signals
 **Status:** Feature complete, trained, tested, and deployed
 **Companion document:** [`README.md`](README.md) — goals, objectives, and achievements
@@ -86,7 +86,10 @@ Two runtime planes:
 | **Offline training plane** | Local machine / Docker | Generate data, engineer features, fit 7 models, evaluate, write artifacts |
 | **Online serving plane** | Vercel serverless | Accept vitals JSON, run frozen model parameters in TypeScript, return risk + priority |
 
-The two planes meet at exactly one artifact: `web/lib/model-params.json`.
+Inference meets the serving plane at exactly one artifact: `web/lib/model-params.json`.
+The home screen also reads `web/lib/training-support.json` (extrapolation bounds) and
+`web/lib/training-results.json` (published metrics and curves); both are generated from
+the same Python artifacts but never participate in scoring.
 
 ---
 
@@ -144,7 +147,7 @@ Generation strategies:
 | `fever_flag` | Temp > 38.0 °C | Binary clinical criterion |
 | `tachypnea_flag` | RR > 20 | Binary clinical criterion |
 
-**Total feature dimension: 22** (13 numeric vitals + 9 derived).
+**Total feature dimension: 22** (13 raw features + 9 derived).
 
 The bin edges are right-closed, matching `pandas.cut`, and are reimplemented with
 identical semantics in TypeScript (Section 9).
@@ -214,7 +217,7 @@ is **served** (Section 10 explains why that is not a contradiction).
 
 Training protocol: 20 epochs, Adam (lr = 1e-3), CrossEntropyLoss, batch size 128, best
 checkpoint selected by validation accuracy, CPU-only PyTorch 2.15. Kernel size for the
-CNN is 7; hidden size for both recurrent models is 128. Full run ≈ 18 minutes.
+CNN is 7; hidden size for both recurrent models is 128. Full run ≈ 21 minutes.
 
 Artifacts:
 
@@ -288,8 +291,9 @@ Browser ──POST /api/predict──► Next.js serverless function (Node.js)
                             web/lib/model-params.json ← frozen model (4.4 KB)
 ```
 
-Only `web/` is deployed. `data/`, `models/`, `experiments/`, `.venv`, and the training
-source are git-ignored and never uploaded. **No Python, scikit-learn, PyTorch, joblib,
+Only `web/` is deployed. `data/`, `models/`, `experiments/` and `.venv` are git-ignored;
+the Python training source is tracked in git but is not uploaded to Vercel because the
+project's Root Directory is `web/`. **No Python, scikit-learn, PyTorch, joblib,
 or pickle executes on Vercel.**
 
 | Route | Type | Purpose |
@@ -316,6 +320,12 @@ Total ≈ 4.4 KB, committed to git, versioned with the code. The export script r
 write a model that scores below 0.965 on a held-out split of at least 8,000 rows
 (see Section 12).
 
+Two further read-only exports are generated from the same Python artifacts and
+committed: `web/lib/training-support.json` (observed min/max per vital, used only for
+the extrapolation warning) and `web/lib/training-results.json` (published metrics,
+confusion matrix and 20-epoch histories for the home screen and `/api/metrics`).
+Neither is read by the prediction path.
+
 ---
 
 ## 8. Production inference pipeline: input to output
@@ -325,7 +335,7 @@ This is the exact path a request takes on the deployed system. Steps 1–9 are i
 
 ### Step 0 — Browser
 
-`web/app/page.tsx` holds 13 vitals in React state (number inputs for seven measured
+`web/app/page.tsx` holds the 13 input fields in React state (number inputs for seven measured
 values, a sex selector, five symptom toggles). Each input is validated on change against
 the same `VITALS_RANGES` table the server uses, so an impossible value is flagged
 immediately and blocks submission. Editing any vitals **discards the previous result**
@@ -409,7 +419,7 @@ The max-subtraction is a numerical-stability measure and does not change the res
 ### Step 7b — Apply the red-flag constraint
 
 One feature encodes a symptom that the linear model cannot separate safely:
-`unconsciousness`. In the 100,000-record training set it appears in **35.1 % of
+`unconsciousness`. In the 100,000-record dataset it appears in **35.1 % of
 CRITICAL** and **4.9 % of HIGH** records — and in **zero** NORMAL or MODERATE
 records. Maximum-likelihood logistic regression therefore has no finite optimum for
 that coefficient (quasi-complete separation); the fitted weight lands at
@@ -421,7 +431,7 @@ The serving layer restores the constraint the data actually encodes: when
 the remaining mass is renormalized over HIGH and CRITICAL. When the model put less
 than 0.1 % mass on both allowed classes it is extrapolating, and the empirical
 `P(class | unconsciousness = 1)` split is used instead (**HIGH 12.3 % / CRITICAL
-87.7 %**, from the held-out counts 160 / 1,330). The response reports
+87.7 %**, from the full-dataset counts 1,233 / 8,774). The response reports
 `applied_constraint: "unconsciousness"` so the rule is visible rather than silent,
 and the UI prints a note under "Scored for" that also discloses when the empirical
 split is being shown.
@@ -442,8 +452,8 @@ educational disclaimer.
 ### Step 9 — Flag extrapolation
 
 Independently of the prediction, `outsideTrainingSupport` compares the record with
-`TRAINING_SUPPORT` (the observed min/max of each vital in the 100,000-record training
-set). Values inside the accepted range but outside that support still produce a score;
+`TRAINING_SUPPORT` (the observed min/max of each vital in the 100,000-record dataset).
+Values inside the accepted range but outside that support still produce a score;
 the response then carries `distribution_warning` and `outside_training_range`, and the UI
 prints an amber banner above the probability bars. Step 9 never changes the class — it
 only stops an extrapolation from being presented as an ordinary answer.
@@ -481,8 +491,8 @@ arithmetic. Consequences:
 | Model | Test Acc | Served? | Reason |
 |---|---|---|---|
 | **Logistic Regression** | 97.03% | ✅ | 1.2 KB joblib → 4.4 KB JSON, ~40 lines of arithmetic, 0 label diffs / 1.3 × 10⁻⁶ probability parity |
-| Random Forest | 98.05% | ❌ | 200 trees, **795,402 nodes**, 76 MB joblib → ≈32 MB compact JSON plus a traversal evaluator |
-| KNN | 95.86% | ❌ | 6.5 MB joblib (70,000 × 22 training vectors) and per-request distance computation |
+| Random Forest | 98.05% | ❌ | 200 trees, **795,402 nodes**, 76.4 MB joblib → ≈32 MB compact JSON plus a traversal evaluator |
+| KNN | 95.86% | ❌ | 6.7 MB joblib (70,000 × 22 training vectors) and per-request distance computation |
 | Decision Tree | 96.61% | ❌ | 80 KB and portable, but less accurate than LR |
 | 1D CNN | 99.87% | ❌ | needs a PyTorch runtime and a 500-sample ECG, which the vitals form cannot produce |
 | GRU | 95.53% | ❌ | needs a 60-step × 6-channel trajectory, not available from the form |
@@ -544,7 +554,7 @@ Design notes:
   how the lower bound was corrected.
 - A cross-field rule rejects only a **strictly inverted** blood pressure
   (`diastolic_bp > systolic_bp`), which never occurs in the training set. Equality is
-  accepted because one-decimal rounding collapsed 15 near-equal training pairs to
+  accepted because one-decimal rounding collapsed 15 near-equal dataset pairs to
   `diastolic == systolic`; those rows are inside the model's experience, even though a
   pulse pressure of zero is not clinically meaningful. The check is shared by the form
   and the API (`crossFieldError` in `web/lib/ranges.ts`).
@@ -559,7 +569,7 @@ Design notes:
 ### 10.2 Training support and extrapolation
 
 Validation bounds are chosen for clinical plausibility, so they are **wider than the
-data the model ever saw**. The 100,000-record synthetic training set covers:
+data the model ever saw**. The 100,000-record synthetic dataset covers:
 
 | Field | Trained on | Accepted by API |
 |---|---|---|
@@ -751,6 +761,10 @@ changes, and confidence differs in 4 rows. Rounded probabilities of 163 rows sum
 1 ± 1 × 10⁻⁴ rather than exactly 1, because four independent 4-dp roundings cannot
 always close to 1. This is display rounding, not model drift.
 
+A wider fuzz sweep of **1,282 raw records** (591 with `unconsciousness = 1`) produced the
+same result: 0 label mismatches, 0 constraint mismatches, and a maximum 4-dp difference
+of `1 × 10⁻⁴`, again only at rounding ties.
+
 Together these cover normalization, the strict coercion layer, feature engineering,
 imputation, scaling, coefficients, softmax and the red-flag constraint — not just the
 coefficients.
@@ -823,7 +837,7 @@ Retraining reproduces the published metrics exactly, which is how the 95.86 / 97
 ## 14. Test strategy — 81/81 passing
 
 ```bash
-pytest tests -q      # 81 passed in ~7 s
+pytest tests -q      # 81 passed in ~5 s
 ```
 
 | Suite | Tests | Coverage |
@@ -1018,7 +1032,7 @@ python3 run_pipeline.py --quick
 | Unrelated folders | `backend/`, `frontend/` are a separate auth demo; excluded from deployment by Root Directory `web`. |
 | No auth on `/api/*` | Intentional for a public demo; add rate limiting before advertising the API. |
 | Data provenance | Fully synthetic; no real patient data is ever used or required. |
-| Zero pulse pressure | 15 / 100,000 training rows have `diastolic == systolic` from one-decimal rounding (Section 3.1); the model saw them, the API accepts equality and rejects inversion. |
+| Zero pulse pressure | 15 / 100,000 dataset rows have `diastolic == systolic` from one-decimal rounding (Section 3.1); the model saw them, the API accepts equality and rejects inversion. |
 | Clinical use | Not permitted. The disclaimer is present in code, UI, and every API response. |
 
 ## 18. Design decisions worth defending
@@ -1031,7 +1045,7 @@ python3 run_pipeline.py --quick
 | Celsius default + explicit unit | Accept both silently | Silent unit confusion produced a 100%-confidence CRITICAL reading for a healthy adult |
 | Test artifacts in `tmp_path` | Let tests reuse `models/` | A test run previously overwrote production artifacts (Section 12.2) |
 | Keep the 22-feature pipeline in TS | Reimplement engineered features differently | Parity must be exact, not approximate |
-| CPU-only training | Require a GPU | Reproducibility on any laptop matters more than an 18-minute run being 5 minutes |
+| CPU-only training | Require a GPU | Reproducibility on any laptop matters more than a 21-minute run being 5 minutes |
 
 ---
 

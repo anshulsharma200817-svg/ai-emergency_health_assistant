@@ -69,7 +69,7 @@ export function vitalErrorMessage(field: VitalsField, value: number): string | n
  *
  * Returns `{ field, message }` for the field that should show the error, or
  * `null`. Only a **strictly** inverted blood pressure (`diastolic > systolic`)
- * is rejected: the synthetic training set contains 15 rows where one-decimal
+ * is rejected: the synthetic dataset contains 15 rows where one-decimal
  * rounding collapsed a near-equal pair to `diastolic == systolic`, so equality
  * is inside the model's experience even though pulse pressure 0 is not
  * clinically meaningful.

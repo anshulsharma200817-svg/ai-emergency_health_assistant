@@ -14,7 +14,7 @@ the repository's own documentation.
 
 1. `README.md` §2–§10 — problem, objectives, technologies, setup and screenshots.
 2. `SYSTEMDESIGN.md` §1–§9 — how the data flows and why each model was or was not served.
-3. `SYSTEMDESIGN.md` §10–§16 — API contract, parity verification and deployment.
+3. `SYSTEMDESIGN.md` §10–§17 — API contract, parity verification, deployment and operational notes.
 4. `BUILD_STATUS.md` §3 — the defects found during verification and how each was fixed.
 
 ## Reproducing the published numbers

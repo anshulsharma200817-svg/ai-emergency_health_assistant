@@ -28,7 +28,7 @@
 |---|---|---|
 | Synthetic data generators | ✅ | Scenario-based tabular, Markov temporal, P/QRS/T ECG signals |
 | Validation & quality report | ✅ | Schema, ranges, duplicates, class balance |
-| Feature engineering | ✅ | 14 raw → 22 features, leak-free |
+| Feature engineering | ✅ | 13 raw features + 9 derived = 22 features, leak-free |
 | Preprocessing pipeline | ✅ | Median impute → StandardScaler → label encode, persisted |
 | Splits | ✅ | 70/15/15 stratified, ID-based temporal split |
 | Classical training | ✅ | KNN, LR, DT, RF with metrics + joblib persistence |
@@ -143,8 +143,8 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
   in-flight ref limits it to one request, and a `latestVitals` ref discards a response
   if the form changed mid-flight.
 - **Inverted blood pressure accepted.** `diastolic > systolic` is now rejected (400)
-  by the API and inline in the form; equality is accepted because 15 training rows
-  round to it (System design §3.1).
+  by the API and inline in the form; equality is accepted because 15 dataset rows
+  round to it (9 of them in the training split; System design §3.1).
 - **The export guard wrote before verifying.** A 400-sample smoke model scoring 0.9549
   passed the old 0.95 threshold and overwrote the committed parameters. The check now
   runs **before** any write, requires 0.965 accuracy and ≥8,000 held-out rows
@@ -160,7 +160,7 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
   (`--allow-data-issues` overrides).
 - **Symptoms could make a patient look healthier.** The displayed model gave
   `unconsciousness` a positive NORMAL coefficient (a degenerate optimum: the flag
-  occurs in 0 of 50,000 low-risk training rows), so healthy vitals + unconscious
+  occurs in 0 of 50,000 low-risk rows in the dataset), so healthy vitals + unconscious
   returned `NORMAL 100%` and all five symptoms returned `NORMAL 99.9%`. The serving
   layer now masks NORMAL/MODERATE whenever that flag is set, renormalizes over
   HIGH/CRITICAL, and reports `applied_constraint`. The mask changes 0 of 15,000 test
@@ -171,7 +171,9 @@ Artifacts: `models/deep/{cnn_1d,rnn,lstm}_best.pt`,
 - **Verification after the fixes.** 160-check API edge sweep passes (every field at
   min−1/min/max/max+1, type confusion, Fahrenheit, malformed bodies, CORS, 48-way
   concurrency, warning boundaries); exported parameters match scikit-learn on all
-  15,000 held-out rows; 600 live HTTP records match with 0 label differences; a full
+  15,000 held-out rows; 600 live HTTP records match with 0 label differences, and a
+  separate 1,282-record fuzz sweep (591 with `unconsciousness = 1`) also matches with
+  0 label differences and max Δ 1e-4 at 4-dp rounding ties; a full
   classical retrain reproduces every metric and every joblib checksum exactly in ~100 s;
   and all three deep checkpoints reload to their published accuracies.
 

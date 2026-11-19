@@ -1,7 +1,11 @@
 # Architecture Overview
 
-Visual companion to [`SYSTEMDESIGN.md`](SYSTEMDESIGN.md). Two planes meet at exactly
-one artifact: `web/lib/model-params.json`.
+Visual companion to [`SYSTEMDESIGN.md`](SYSTEMDESIGN.md).
+
+Inference crosses the boundary at exactly one artifact: `web/lib/model-params.json`.
+The home screen additionally reads two read-only exports generated from the same Python
+artifacts — `training-support.json` (extrapolation bounds) and `training-results.json`
+(metrics and training curves) — neither of which is used to score a request.
 
 > Educational software simulation only. All data is synthetic. Not a medical device.
 
@@ -30,8 +34,8 @@ one artifact: `web/lib/model-params.json`.
          ▼                         │                         │
 ┌──────────────────┐               │                         │
 │ Feature Eng.     │               │                         │
-│ 13 vitals + 9    │               │                         │
-│ derived = 22     │               │                         │
+│ 13 raw features  │               │                         │
+│ + 9 derived = 22 │               │                         │
 │ Impute → Scale   │               │                         │
 └────────┬─────────┘               │                         │
          │                         │                         │
@@ -94,7 +98,9 @@ models/classical/logistic_regression.joblib ─┤
                       4 × 22 coefficients · 4 intercepts
 ```
 
-This is the **only** artifact that crosses from Python to JavaScript.
+This is the **only** artifact used to score a request. The two read-only exports that
+feed the home screen (`training-support.json`, `training-results.json`) are described in
+`SYSTEMDESIGN.md` §7.2.
 
 ---
 
@@ -102,7 +108,7 @@ This is the **only** artifact that crosses from Python to JavaScript.
 
 ```
 Browser
-  │  POST /api/predict  {13 vitals}
+  │  POST /api/predict  {13 fields}
   ▼
 Next.js serverless function (Node.js)
   │
@@ -133,6 +139,8 @@ Step-by-step detail with a worked example:
 | PyTorch and `.pt` checkpoints | ✅ | — |
 | `joblib` model files | ✅ | — |
 | `web/lib/model-params.json` | produced | ✅ |
+| `web/lib/training-support.json` | produced | ✅ |
+| `web/lib/training-results.json` | produced | ✅ |
 | TypeScript inference | — | ✅ |
 | Vitals validation | mirrored | ✅ |
 | Alert priority mapping | ✅ | ✅ |
