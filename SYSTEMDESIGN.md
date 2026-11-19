@@ -645,7 +645,7 @@ curl -X POST https://your-app.vercel.app/api/predict \
   -H 'Content-Type: application/json' \
   -d '{"age":67,"heart_rate":142,"systolic_bp":72,"diastolic_bp":44,
        "spo2":84,"temperature":39.4,"respiratory_rate":34,
-       "chest_pain":1,"breathing_difficulty":1}'
+       "chest_pain":1,"breathing_difficulty":1,"dizziness":1}'
 ```
 
 ### Example response
